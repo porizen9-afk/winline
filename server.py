@@ -416,6 +416,41 @@ async def catalog(request: Request, x_init_data: str | None = Header(None)):
     return {"items": [{"slug": str(i.get("id")), "name": i.get("name"), "image": i.get("image"),
                        "price": i.get("price"), "count": i.get("count")} for i in stock()]}
 
+# ---------- ЗАГЛУШКИ: пути, которые зовёт фронт, но настоящей логики пока нет ----------
+# Возвращают пустые данные, чтобы мини-аппка не падала с «Нет связи с сервером».
+# Когда будешь писать настоящую логику — заменяй заглушку на нормальный обработчик.
+@app.post("/api/quests")
+async def quests_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {"enabled": True, "rows": [], "server_time": int(time.time())}
+
+@app.post("/api/shop")
+async def shop_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    return {"offers": [], "balance_ton": db.get_coins(uid), "hatcoin_balance": 0}
+
+@app.post("/api/history")
+async def history_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {"rows": []}
+
+@app.post("/api/leaderboard")
+async def leaderboard_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    now = int(time.time())
+    return {"since": now, "now": now, "ends": now, "season": "", "alltime": True,
+            "endless": True, "finished": False, "me": {"rank": None, "excluded": False}, "rows": []}
+
+@app.post("/api/wallet")
+async def wallet_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {"ok": True}
+
+@app.post("/api/boss/status")
+async def boss_status_stub(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {}
+
 # картинки подарков от юзербота лежат на постоянном томе (data/gifts), а не внутри образа
 GIFTS_DIR = os.getenv("GIFTS_IMG_DIR", "data/gifts")
 os.makedirs(GIFTS_DIR, exist_ok=True)
