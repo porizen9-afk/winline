@@ -106,7 +106,7 @@ def verify_init(raw: str) -> int:
         raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
     pairs = dict(parse_qsl(raw, keep_blank_values=True))
     got = pairs.pop("hash", "")
-    pairs.pop("signature", None)
+    # StaticGram (как и Telegram): в data_check_string входят ВСЕ поля кроме hash, включая signature
     check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
