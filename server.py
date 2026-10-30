@@ -106,11 +106,18 @@ def verify_init(raw: str) -> int:
         raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
     pairs = dict(parse_qsl(raw, keep_blank_values=True))
     got = pairs.pop("hash", "")
-    # StaticGram (как и Telegram): в data_check_string входят ВСЕ поля кроме hash, включая signature
-    check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-    calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-    if not got or not hmac.compare_digest(calc, got):
+
+    def _calc(p):
+        chk = "\n".join(f"{k}={p[k]}" for k in sorted(p))
+        return hmac.new(secret, chk.encode(), hashlib.sha256).hexdigest()
+
+    # StaticGram (как и Telegram): в data_check_string входят ВСЕ поля кроме hash, включая signature.
+    # На случай старых клиентов пробуем ещё и вариант без signature.
+    ok = bool(got) and hmac.compare_digest(_calc(pairs), got)
+    if not ok and "signature" in pairs:
+        ok = bool(got) and hmac.compare_digest(_calc({k: v for k, v in pairs.items() if k != "signature"}), got)
+    if not ok:
         print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
         raise HTTPException(401, "bad signature")
     if time.time() - int(pairs.get("auth_date") or 0) > 86400:
