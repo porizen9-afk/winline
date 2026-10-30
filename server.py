@@ -7,10 +7,15 @@ import hashlib, hmac, json, os, random, time, uuid
 from pathlib import Path
 from urllib.parse import parse_qsl
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # import db / config / bots работает из любой папки
+
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -24,9 +29,60 @@ db.init()
 app = FastAPI(title="Winline")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-STATIC = os.path.join(os.path.dirname(__file__), "static")
-PUBLIC = os.path.join(os.path.dirname(__file__), "public")
-FRONT = PUBLIC if os.path.isdir(PUBLIC) else STATIC
+
+class InitDataFromBody:
+    """Мини-аппка шлёт POST {initData, ...} — переносим initData в заголовок X-Init-Data."""
+    def __init__(self, app): self.app = app
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or not scope["path"].startswith("/api/"):
+            return await self.app(scope, receive, send)
+        chunks, more = [], True
+        while more:
+            m = await receive()
+            chunks.append(m.get("body", b"")); more = m.get("more_body", False)
+        body = b"".join(chunks)
+        headers = list(scope["headers"])
+        if not any(k == b"x-init-data" for k, _ in headers):
+            try:
+                init = (json.loads(body or b"{}") or {}).get("initData")
+                if isinstance(init, str) and init:
+                    headers.append((b"x-init-data", init.encode()))
+                    scope = {**scope, "headers": headers}
+            except Exception:
+                pass
+        sent = False
+        async def replay():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+        await self.app(scope, replay, send)
+
+app.add_middleware(InitDataFromBody)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_err(request, exc):
+    """Фронт читает data.error / e.code — приводим все ошибки к такому виду."""
+    d = exc.detail
+    if isinstance(d, dict):
+        body = {"error": d.get("code") or "error", "message": d.get("message") or d.get("code") or "error", **d}
+    else:
+        msg = str(d)
+        body = {"error": "maintenance" if (exc.status_code == 503 and msg == "maintenance") else msg, "message": msg}
+    return JSONResponse(body, status_code=exc.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def _val_err(request, exc):
+    return JSONResponse({"error": "bad_request", "message": "bad request"}, status_code=422)
+
+# Раскладка репозитория: server.py, config.py, db.py, static/ (внутри index.html, /images и все файлы фронта)
+ROOT = Path(__file__).resolve().parent
+STATIC = ROOT / "static"
+ASSETS = STATIC / "static" if (STATIC / "static").is_dir() else STATIC      # /static/...  (если файлы лежат во вложенной static/static — тоже работает)
+IMAGES = next((p for p in (STATIC / "images", ASSETS / "images", ROOT / "images") if p.is_dir()), None)
 
 MINES_MULT = {
     3: [1.0,1.12,1.28,1.47,1.7,2.0,2.35,2.8,3.4,4.2,5.2,6.5,8.2,10.5,13.5,17.5,23.0,30.0,40.0,55.0,75.0,100.0],
@@ -45,6 +101,8 @@ def verify_init(raw: str) -> int:
         raise HTTPException(401, "no initData")
     if raw.lower().startswith("tma "):
         raw = raw[4:].strip()
+    if not BOT_TOKEN:
+        raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
     pairs = dict(parse_qsl(raw, keep_blank_values=True))
     got = pairs.pop("hash", "")
     pairs.pop("signature", None)
@@ -119,19 +177,27 @@ class StarsIn(BaseModel):
 # ---------- pages ----------
 @app.get("/")
 async def index():
-    for base in (FRONT, STATIC):
-        path = os.path.join(base, "index.html")
-        if os.path.isfile(path):
-            return FileResponse(path)
+    for base in (STATIC, ASSETS, ROOT):
+        path = base / "index.html"
+        if path.is_file():
+            return FileResponse(path, headers={"Cache-Control": "no-cache"})
     return HTMLResponse("<h1>WinLine</h1><p>no index.html</p>")
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "maintenance": db.get_setting("maintenance") == "1"}
 
-@app.get("/api/maintenance")
-def maint():
-    return {"maintenance": db.get_setting("maintenance") == "1"}
+@app.api_route("/api/maintenance", methods=["GET", "POST"])
+def maint(request: Request, x_init_data: str | None = Header(None)):
+    on = db.get_setting("maintenance") == "1"
+    blocked = False
+    if on:
+        try:
+            raw = x_init_data or request.headers.get("authorization") or ""
+            blocked = not db.is_admin(verify_init(raw[4:].strip() if raw.lower().startswith("tma ") else raw.strip()))
+        except HTTPException:
+            blocked = True
+    return {"maintenance": on, "blocked": blocked}
 
 # ---------- state / spin / chests ----------
 @app.post("/api/state")
@@ -148,7 +214,7 @@ async def api_state(request: Request, x_init_data: str | None = Header(None)):
         "prizes": prizes,
         "config": {"chance_min": 0.01, "chance_max": 0.70, "sections": {"upgrade": True, "chests": True}},
         "stats": {"turnover_ton": turn}, "turnover_ton": turn,
-        "theme": "halloween", "server_time": int(time.time()), "relayer_stock": stock(),
+        "theme": "halloween", "server_time": int(time.time()), "relayer_stock": stock(), "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
     }
 
 @app.post("/api/spin")
@@ -161,18 +227,22 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
     if body.tier == "gift" and body.gift:
         meta = next((x for x in st if str(x.get("id")) == str(body.gift)), None)
         prize = float((meta or {}).get("price") or 0)
-    cost = float(body.cost) if body.cost and body.cost > 0 else (round(prize * show, 4) if prize else round(show * 12, 4))
-    if cost < MIN_BET or cost > MAX_BET:
-        raise HTTPException(400, detail={"code": "bad_bet"})
+    if body.tier == "gift" and body.gift:
+        if not prize:
+            raise HTTPException(400, detail={"code": "gift_unavailable"})
+        cost = round(prize * show, 4)          # цену диктует сервер, не клиент
+    else:
+        cost = float(body.cost) if body.cost and body.cost > 0 else round(show * 12, 4)
+    if not (cost == cost) or cost < MIN_BET or cost > MAX_BET:
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
     edge = 0.04 + show * 0.06
     if cost >= 8000: edge += 0.04
     elif cost >= 3000: edge += 0.02
     if db.day_pnl() < 0:
         edge += min(0.12, abs(db.day_pnl()) / 50000 * 0.08)
     real = max(0.005, min(show - edge, show * 0.97))
-    if db.get_coins(uid) < cost:
+    if not db.spend(uid, cost):
         raise HTTPException(400, detail={"code": "insufficient_funds"})
-    db.add_coins(uid, -cost)
     win = random.random() < real
     gift_row = None
     payout = 0.0
@@ -203,9 +273,9 @@ def _mult(opened, empties):
 async def chests_start(body: ChestStart, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     bet, empties = float(body.bet), int(body.empties)
-    if bet < MIN_BET: raise HTTPException(400, detail={"code": "bad_bet"})
-    if db.get_coins(uid) < bet: raise HTTPException(400, detail={"code": "insufficient_funds"})
-    db.add_coins(uid, -bet)
+    if not (bet == bet) or bet < MIN_BET or bet > MAX_BET:
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
+    if not db.spend(uid, bet): raise HTTPException(400, detail={"code": "insufficient_funds"})
     bad = sorted(random.sample(range(CELLS), min(empties, CELLS-1)))
     with db.connect() as c:
         c.execute("""INSERT INTO chest_rounds(user_id,bet,empties,bad,opened,mult,active,created)
@@ -236,7 +306,8 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
             opened.append(cell)
             c.execute("UPDATE chest_rounds SET active=0,opened=?,bad=? WHERE user_id=?",
                       (json.dumps(opened), json.dumps(bad), uid))
-            return {"balance_ton": db.get_coins(uid), "safe": False, "win": False, "cell": cell, "bad": bad, "mult": 0, "payout_ton": 0}
+            bal = float(c.execute("SELECT coins FROM users WHERE id=?", (uid,)).fetchone()["coins"])   # тот же коннект: иначе "database is locked"
+            return {"balance_ton": bal, "safe": False, "win": False, "cell": cell, "bad": bad, "mult": 0, "payout_ton": 0}
         opened.append(cell)
         mult = _mult(len(opened), int(row["empties"]))
         c.execute("UPDATE chest_rounds SET opened=?,mult=? WHERE user_id=?", (json.dumps(opened), mult, uid))
@@ -252,7 +323,9 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
         if not opened: raise HTTPException(400, "open first")
         mult = float(row["mult"] or 1)
         payout = round(float(row["bet"]) * mult, 4)
-        c.execute("UPDATE chest_rounds SET active=0 WHERE user_id=?", (uid,))
+        cur = c.execute("UPDATE chest_rounds SET active=0 WHERE user_id=? AND active=1", (uid,))
+        if cur.rowcount != 1:                    # второй параллельный cashout — выплаты нет
+            raise HTTPException(400, detail={"code": "no_round"})
     db.add_coins(uid, payout)
     db.ledger(0, payout)
     return {"balance_ton": db.get_coins(uid), "win": True, "payout_ton": payout, "mult": mult}
@@ -262,7 +335,8 @@ async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None 
     uid = uid_from(request, x_init_data)
     amount, mult = float(body.amount), int(body.mult)
     if mult not in UPGRADE_BASE: raise HTTPException(400, "mult 2/5/10")
-    if db.get_coins(uid) < amount: raise HTTPException(400, detail={"code": "insufficient_funds"})
+    if not (amount == amount) or amount < MIN_BET or amount > MAX_BET:   # отрицательная сумма раньше давала деньги
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
     with db.connect() as c:
         r = c.execute("SELECT upgrade_win_streak,upgrade_lose_streak FROM users WHERE id=?", (uid,)).fetchone()
         ws, ls = int(r["upgrade_win_streak"] or 0), int(r["upgrade_lose_streak"] or 0)
@@ -272,7 +346,7 @@ async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None 
     for k,v in sorted((UPGRADE_LOSS.get(mult) or {}).items()):
         if ls >= k: add = v
     chance = min({2:0.59,5:0.18,10:0.07}[mult], base + add)
-    db.add_coins(uid, -amount)
+    if not db.spend(uid, amount): raise HTTPException(400, detail={"code": "insufficient_funds"})
     win = False if ws >= 3 else (random.random() < chance)
     payout = amount * mult if win else 0
     if win:
@@ -286,7 +360,7 @@ async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None 
     return {"win": win, "mult": mult, "bet": amount, "payout": payout, "chance": chance, "balance_ton": db.get_coins(uid)}
 
 # ---------- inventory / withdraw ----------
-@app.get("/api/relayer/gifts")
+@app.api_route("/api/relayer/gifts", methods=["GET", "POST"])
 async def relayer(request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     with db.connect() as c:
@@ -305,7 +379,8 @@ async def claim(body: IdIn, request: Request, x_init_data: str | None = Header(N
         gid = str(row["gift_id"])
         if int((st.get(gid) or {}).get("count") or 0) < 1:
             raise HTTPException(409, "Нет на складе релеера, подождите")
-        c.execute("UPDATE inventory SET status='sending' WHERE rowid_=?", (inv_id,))
+        cur = c.execute("UPDATE inventory SET status='sending' WHERE rowid_=? AND status='won'", (inv_id,))
+        if cur.rowcount != 1: raise HTTPException(409, "already queued")
         c.execute("INSERT INTO gift_queue(user_id,gift_id,inv_row,status,created) VALUES(?,?,?,'pending',?)",
                   (uid, gid, inv_id, int(time.time())))
     return {"ok": True, "queued": True, "message": "В очереди на отправку"}
@@ -323,9 +398,8 @@ async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = He
             (uid, since)).fetchone()["s"]
         if int(already) + WITHDRAW_STEP > DAILY_WITHDRAW_CAP:
             raise HTTPException(400, f"лимит {DAILY_WITHDRAW_CAP}/сутки")
-        if db.get_coins(uid) < WITHDRAW_STEP:
-            raise HTTPException(400, "no balance")
-        db.add_coins(uid, -WITHDRAW_STEP)
+        if not db.spend(uid, WITHDRAW_STEP):
+            raise HTTPException(400, detail={"code": "insufficient_funds"})
         c.execute("INSERT INTO withdrawals VALUES(?,?,?,?,?,?)",
                   (rid, uid, WITHDRAW_STEP, "pending", "", int(time.time())))
     ok, err = await bot_api("withdrawStarBalance", {"user_id": uid, "star_count": WITHDRAW_STEP, "request_id": rid})
@@ -342,9 +416,26 @@ async def catalog(request: Request, x_init_data: str | None = Header(None)):
     return {"items": [{"slug": str(i.get("id")), "name": i.get("name"), "image": i.get("image"),
                        "price": i.get("price"), "count": i.get("count")} for i in stock()]}
 
-# static last
-if os.path.isdir(FRONT):
-    app.mount("/", StaticFiles(directory=FRONT, html=True), name="front")
+# картинки подарков от юзербота лежат на постоянном томе (data/gifts), а не внутри образа
+GIFTS_DIR = os.getenv("GIFTS_IMG_DIR", "data/gifts")
+os.makedirs(GIFTS_DIR, exist_ok=True)
+app.mount("/static/gifts", StaticFiles(directory=GIFTS_DIR), name="gifts")   # раньше общего /static
+
+# статика: /static/*, /images/* — и всё
+if ASSETS.is_dir():
+    app.mount("/static", StaticFiles(directory=ASSETS), name="assets")
+if IMAGES:
+    app.mount("/images", StaticFiles(directory=IMAGES), name="images")
+
+
+# админ-бот и юзербот (bots.py) стартуют вместе с сервером — отдельные процессы не нужны
+@app.on_event("startup")
+async def _start_bots():
+    try:
+        import bots
+        bots.start()
+    except Exception as e:
+        print("bots не запущены:", e)
 
 if __name__ == "__main__":
     import uvicorn
