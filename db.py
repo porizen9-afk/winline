@@ -5,13 +5,23 @@ from config import DB_PATH, OWNER_ID, ADMIN_IDS
 
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
+class _Con(sqlite3.Connection):
+    """with connect() as c: — коммит/откат и ЗАКРЫТИЕ соединения (раньше соединения копились)."""
+    def __exit__(self, et, ev, tb):
+        try:
+            return super().__exit__(et, ev, tb)
+        finally:
+            self.close()
+
 def connect():
-    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15, factory=_Con)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=15000")
     return con
 
 def init():
     with connect() as c:
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS users(
               id INTEGER PRIMARY KEY, coins REAL NOT NULL DEFAULT 0,
@@ -34,6 +44,26 @@ def init():
             CREATE TABLE IF NOT EXISTS spin_log(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chance REAL, cost REAL, win INTEGER, created INTEGER);
         """)
+    _migrate()
+
+def _migrate():
+    """Старые базы без новых колонок не падают."""
+    with connect() as c:
+        have = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        for col, typ in [("username", "TEXT DEFAULT ''"), ("banned", "INTEGER NOT NULL DEFAULT 0"),
+                         ("upgrade_win_streak", "INTEGER DEFAULT 0"), ("upgrade_lose_streak", "INTEGER DEFAULT 0")]:
+            if col not in have:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
+
+def spend(uid, amount):
+    """Атомарно списать монеты. True, если хватило. Защита от двойной траты и отрицательных сумм."""
+    amount = float(amount)
+    if not (amount > 0) or amount != amount or amount == float("inf"):
+        return False
+    ensure_user(uid)
+    with connect() as c:
+        cur = c.execute("UPDATE users SET coins=coins-? WHERE id=? AND coins>=?", (amount, uid, amount))
+        return cur.rowcount == 1
 
 def ensure_user(uid, username=""):
     with connect() as c:
