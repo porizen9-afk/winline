@@ -98,6 +98,7 @@ def verify_init(raw: str) -> int:
     if not raw:
         if DEV_USER_ID:
             return int(DEV_USER_ID)
+        print("AUTH 401: initData пустой (открыто не из бота?)")
         raise HTTPException(401, "no initData")
     if raw.lower().startswith("tma "):
         raw = raw[4:].strip()
@@ -110,8 +111,10 @@ def verify_init(raw: str) -> int:
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
     if not got or not hmac.compare_digest(calc, got):
+        print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
         raise HTTPException(401, "bad signature")
     if time.time() - int(pairs.get("auth_date") or 0) > 86400:
+        print("AUTH 401: expired")
         raise HTTPException(401, "expired")
     return int(json.loads(pairs["user"])["id"])
 
