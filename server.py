@@ -459,6 +459,15 @@ GIFTS_DIR = os.getenv("GIFTS_IMG_DIR", "data/gifts")
 os.makedirs(GIFTS_DIR, exist_ok=True)
 app.mount("/static/gifts", StaticFiles(directory=GIFTS_DIR), name="gifts")   # раньше общего /static
 
+# app.js: берём из static/, а если лежит в корне репозитория — оттуда
+@app.get("/static/app.js")
+async def app_js():
+    for p in (ASSETS / "app.js", ROOT / "app.js"):
+        if p.is_file():
+            return FileResponse(p, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+    raise HTTPException(404, "app.js not found")
+
+
 # статика: /static/*, /images/* — и всё
 if ASSETS.is_dir():
     app.mount("/static", StaticFiles(directory=ASSETS), name="assets")
