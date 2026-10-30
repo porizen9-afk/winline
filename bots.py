@@ -341,12 +341,51 @@ async def on_callback(cq: dict):
     await patch(uid, "Неизвестная кнопка", back_kb())
 
 
+APP_URL = (os.getenv("WEBAPP_URL") or os.getenv("MINIAPP_URL") or "").strip()
+# Прямую ссылку staticgram.top/<бот>/<апп> в кнопки не ставим: внутри клиента она открывается как сайт и staticgram.top отказывает в соединении.
+HELLO = os.getenv("START_TEXT", "🎃 <b>WinLine</b> — лучший дроп!\nНажми кнопку ниже, чтобы открыть игру.")
+
+
+async def send_app(chat_id: int, extra: str = "") -> None:
+    """Отправляет приветствие с кнопкой, открывающей мини-апп."""
+    text = HELLO + (("\n\n" + extra) if extra else "")
+    if not APP_URL:
+        await send(chat_id, text + "\n\n⚠️ Адрес мини-аппа не задан (WEBAPP_URL).")
+        return
+    r = await send(chat_id, text, {"inline_keyboard": [[{"text": "🎮 Открыть WinLine", "web_app": {"url": APP_URL}}]]})
+    if not r.get("ok"):   # если клиент не принимает web_app-кнопку — обычная ссылка
+        print("web_app button failed:", r.get("description"))
+        r = await send(chat_id, text, {"inline_keyboard": [[{"text": "🎮 Открыть WinLine", "url": APP_URL}]]})
+        if not r.get("ok"):
+            await send(chat_id, text + f"\n\n{APP_URL}")
+
+
+async def setup_menu_button() -> None:
+    """Кнопка «Играть» слева от поля ввода в чате бота + команды."""
+    if not APP_URL:
+        return
+    try:
+        await api("deleteWebhook", drop_pending_updates=False)
+    except Exception as e:
+        print("deleteWebhook:", e)
+    try:
+        r = await api("setChatMenuButton", menu_button={"type": "web_app", "text": "Играть", "web_app": {"url": APP_URL}})
+        print("menu button:", "ok" if r.get("ok") else r.get("description"))
+        await api("setMyCommands", commands=[{"command": "start", "description": "Открыть игру"}])
+    except Exception as e:
+        print("menu button error:", e)
+
+
 async def on_text(chat_id: int, uid: int, text: str):
+    t = text.strip()
+    if t.startswith("/start"):
+        await send_app(chat_id, "Админ-панель: /admin" if is_admin(uid) else "")
+        return
     if not is_admin(uid):
-        await send(chat_id, "Нет доступа. /admin")
+        await send_app(chat_id)
         return
 
-    if text.strip() in ("/admin", "/start", "админ"):
+    if t in ("/admin", "админ"):
         await show_menu(chat_id, STATE.get(uid, {}).get("msg_id"), uid)
         return
 
@@ -483,6 +522,7 @@ async def loop_admin():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN required")
     init_admin_tables()
+    await setup_menu_button()
     offset = 0
     print("admin bot (buttons) on", API_BASE, "owner", OWNER_ID)
     while True:
@@ -806,10 +846,12 @@ def start():
             except BaseException as e:
                 print(f"[{name}] упал: {e!r} — перезапуск через 15 с")
                 await asyncio.sleep(15)
-    if BOT_TOKEN and OWNER_ID:
+    if BOT_TOKEN:
         loop.create_task(guard("admin_bot", loop_admin))
+        if not OWNER_ID:
+            print("бот запущен без OWNER_ID: /start работает, админ-панель недоступна")
     else:
-        print("admin_bot выключен: нужны BOT_TOKEN и OWNER_ID")
+        print("бот выключен: нужен BOT_TOKEN")
     if API_ID and API_HASH and HAVE_TELETHON:
         loop.create_task(guard("userbot", userbot_main))
     else:
