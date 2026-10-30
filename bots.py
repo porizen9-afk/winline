@@ -378,6 +378,9 @@ async def setup_menu_button() -> None:
 
 async def on_text(chat_id: int, uid: int, text: str):
     t = text.strip()
+    if t.split("@")[0] == "/id":      # узнать свой ID для OWNER_ID / ADMIN_IDS
+        await send(chat_id, f"Ваш ID: <code>{uid}</code>")
+        return
     if t.startswith("/start"):
         await send_app(chat_id, "Админ-панель: /admin" if is_admin(uid) else "")
         return
