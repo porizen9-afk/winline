@@ -92,6 +92,22 @@ MINES_MULT = {
 UPGRADE_BASE = {2: 0.48, 5: 0.15, 10: 0.05}
 UPGRADE_LOSS = {2:{2:0.04,3:0.07,4:0.09,5:0.11},5:{3:0.015,4:0.025,5:0.035},10:{3:0.008,4:0.012,5:0.018}}
 CELLS = 25
+HAT_VALUE = float(os.getenv("HAT_VALUE", "12"))        # во сколько GRAM оценивается обычная шляпа
+MINES_RTP = float(os.getenv("MINES_RTP", "0.95"))       # возврат игрокам в минах (0.95 = комиссия 5%)
+CX_CHOICES = [1, 3, 5, 10, 15, 20]
+CHANCE_GRID = [{"chance": round(p / 100, 2), "cost_ton": round(HAT_VALUE * p / 100, 2)} for p in range(5, 71)]
+
+
+def _mult_at(empties: int, k: int) -> float:
+    """Честный множитель после k безопасных клеток при `empties` минах из 25 (с комиссией 1-RTP)."""
+    surv = 1.0
+    for i in range(k):
+        surv *= (CELLS - empties - i) / (CELLS - i)
+    return round(MINES_RTP / surv, 2) if surv > 0 else 0.0
+
+
+def _ladder() -> dict:
+    return {str(e): [_mult_at(e, k) for k in range(1, CELLS - e + 1)] for e in CX_CHOICES}
 
 # ---------- auth ----------
 def verify_init(raw: str) -> int:
@@ -147,6 +163,27 @@ def stock():
         return json.loads(p.read_text("utf-8")).get("stock") or []
     except Exception:
         return []
+
+GIFT_MARGIN = float(os.getenv("GIFT_MARGIN", "0.08"))    # наценка на подарки (видна в цене: цена = подарок×шанс/(1-наценка))
+HOUSE_EDGE = float(os.getenv("HOUSE_EDGE", "0.08"))      # комиссия обычной шляпы
+
+
+def available_stock():
+    """Склад релеера минус подарки, которые уже выиграны игроками и ждут отправки."""
+    st = stock()
+    try:
+        with db.connect() as c:
+            held = {r["gift_id"]: r["n"] for r in c.execute(
+                "SELECT gift_id, COUNT(*) AS n FROM inventory WHERE status IN ('won','sending') GROUP BY gift_id")}
+    except Exception:
+        held = {}
+    out = []
+    for x in st:
+        left = int(x.get("count") or 0) - int(held.get(str(x.get("id")), 0))
+        if left > 0:
+            out.append({**x, "count": left})
+    return out
+
 
 async def bot_api(method: str, payload: dict):
     if not BOT_TOKEN:
@@ -210,47 +247,103 @@ def maint(request: Request, x_init_data: str | None = Header(None)):
     return {"maintenance": on, "blocked": blocked}
 
 # ---------- state / spin / chests ----------
-@app.post("/api/state")
-async def api_state(request: Request, x_init_data: str | None = Header(None)):
+@app.api_route("/api/state", methods=["GET", "POST"])
+def api_state(request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
+    return build_state(uid)
+
+
+def build_state(uid: int) -> dict:
     turn = db.turnover(uid)
     weapons = ["staff"] + (["skeleton"] if turn >= 30000 else [])
+    st = available_stock()
     with db.connect() as c:
         prizes = [dict(r) for r in c.execute(
             "SELECT rowid_ as id,name,image,price,status FROM inventory WHERE user_id=? AND status='won'", (uid,))]
+        for p in prizes:
+            p["price_ton"] = p.get("price") or 0
+            p["slug"] = p.get("name") or ""
+        rnd = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
+        wd = c.execute("SELECT COUNT(*), COALESCE(SUM(stars),0) FROM withdrawals WHERE user_id=? AND status IN ('ok','sent','done')", (uid,)).fetchone()
+    chest_round = None
+    if rnd:
+        chest_round = {"empties": int(rnd["empties"]), "bet": float(rnd["bet"]), "opened": json.loads(rnd["opened"] or "[]"),
+                       "mult": float(rnd["mult"] or 1), "cells": CELLS}
+    gift_upgrade = os.getenv("GIFT_UPGRADE", "auto").lower()
+    gifts_on = (len(st) > 0) if gift_upgrade == "auto" else gift_upgrade in ("1", "true", "yes")
+    random_tier = {"chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника", "value_ton": HAT_VALUE}
+    tour = db.kv_get(uid, "tour_sections", None)
+    if tour is None:       # лавка пока закрыта — обучение не показываем
+        tour = ["welcome", "shop", "achievements", "quests"]
+    need = lambda lv: (lv - 1) ** 2 * 5
+    lvl = 1
+    while lvl < 60 and turn >= need(lvl + 1):
+        lvl += 1
+    lv = {"level": lvl, "max": lvl >= 60, "turnover_ton": turn, "next_ton": need(min(lvl + 1, 60)),
+          "progress": 1.0 if lvl >= 60 else (turn - need(lvl)) / max(1, need(lvl + 1) - need(lvl))}
     return {
-        "balance_ton": db.get_coins(uid), "hatcoin_balance": 0,
-        "user": {"id": uid}, "weapons": weapons, "permanent_weapons": weapons,
-        "prizes": prizes,
-        "config": {"chance_min": 0.01, "chance_max": 0.70, "sections": {"upgrade": True, "chests": True}},
-        "stats": {"turnover_ton": turn}, "turnover_ton": turn,
-        "theme": "halloween", "server_time": int(time.time()), "relayer_stock": stock(), "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
+        "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "free_spin_coins": 0,
+        "user": {"id": uid, "username": ""}, "weapons": weapons, "permanent_weapons": weapons,
+        "prizes": prizes, "chest_round": chest_round,
+        "config": {
+            "chance_min": 0.05, "chance_max": 0.70,
+            "sections": {"upgrade": True, "chests": True, "leaders": False, "staking": False},
+            "gift_upgrade": gifts_on, "tier_enabled": False,
+            "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
+            "tiers": {"random": random_tier},
+            "min_bet": MIN_BET, "max_bet": MAX_BET, "min_deposit_ton": 1,
+            "chests": {"min_bet": MIN_BET, "max_bet": MAX_BET, "ladder": _ladder()},
+            "ui_texts": {},
+        },
+        "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
+                  "games": db.count_games(uid)},
+        "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
+        "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
+        "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
+        "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
     }
+
+
+class TourIn(BaseModel):
+    sections: list = []
+
+
+@app.post("/api/tour/complete")
+async def tour_complete(body: TourIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    seen = set(db.kv_get(uid, "tour_sections", []) or [])
+    seen.update(str(x) for x in (body.sections or []))
+    seen.add("welcome")
+    db.kv_set(uid, "tour_sections", sorted(seen))
+    return {"tour_sections": sorted(seen), "tour_done": True}
+
+
+@app.post("/api/state/personal-boss")
+async def personal_boss_state(request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {}
+
 
 @app.post("/api/spin")
 async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     show = max(0.01, min(0.70, float(body.chance)))
-    st = stock()
+    st = available_stock()
     prize = 0.0
     meta = None
+    show = round(show, 2)
     if body.tier == "gift" and body.gift:
         meta = next((x for x in st if str(x.get("id")) == str(body.gift)), None)
         prize = float((meta or {}).get("price") or 0)
     if body.tier == "gift" and body.gift:
         if not prize:
             raise HTTPException(400, detail={"code": "gift_unavailable"})
-        cost = round(prize * show, 4)          # цену диктует сервер, не клиент
+        cost = round(prize * show / (1 - GIFT_MARGIN), 2)      # цену диктует сервер (та же формула, что у фронта)
     else:
-        cost = float(body.cost) if body.cost and body.cost > 0 else round(show * 12, 4)
+        cost = round(HAT_VALUE * show, 2)
     if not (cost == cost) or cost < MIN_BET or cost > MAX_BET:
         raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
-    edge = 0.04 + show * 0.06
-    if cost >= 8000: edge += 0.04
-    elif cost >= 3000: edge += 0.02
-    if db.day_pnl() < 0:
-        edge += min(0.12, abs(db.day_pnl()) / 50000 * 0.08)
-    real = max(0.005, min(show - edge, show * 0.97))
+    real = show        # показанный шанс = настоящий; комиссия заложена в цену/выплату
     if not db.spend(uid, cost):
         raise HTTPException(400, detail={"code": "insufficient_funds"})
     win = random.random() < real
@@ -265,7 +358,7 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
             )
         gift_row = {"id": body.gift, "name": (meta or {}).get("name"), "price": payout}
     elif win:
-        payout = cost / show * 0.9
+        payout = round(HAT_VALUE * (1 - HOUSE_EDGE), 2)
         db.add_coins(uid, payout)
     db.ledger(cost, payout if win else 0)
     db.add_turnover(uid, cost)
@@ -275,9 +368,7 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
     return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "win": win, "chance": show, "cost_ton": cost, "gift": gift_row}
 
 def _mult(opened, empties):
-    n = 3 if empties <= 3 else (5 if empties <= 5 else 8)
-    m = MINES_MULT[n]
-    return float(m[min(max(opened, 0), len(m)-1)])
+    return _mult_at(int(empties), int(opened)) if opened > 0 else 1.0
 
 @app.post("/api/chests/start")
 async def chests_start(body: ChestStart, request: Request, x_init_data: str | None = Header(None)):
@@ -307,21 +398,29 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
         opened = json.loads(row["opened"] or "[]")
         bad = json.loads(row["bad"] or "[]")
         if cell in opened: raise HTTPException(400, "already")
-        left = max(1, CELLS - len(opened))
-        remain_bad = max(0, int(row["empties"]) - sum(1 for x in opened if x in bad))
-        p = min(0.88, (remain_bad / left) * MINES_HOUSE) if remain_bad else 0
-        is_bomb = cell in bad or (remain_bad > 0 and random.random() < p)
+        is_bomb = cell in bad
         if is_bomb:
             if cell not in bad: bad.append(cell)
             opened.append(cell)
             c.execute("UPDATE chest_rounds SET active=0,opened=?,bad=? WHERE user_id=?",
                       (json.dumps(opened), json.dumps(bad), uid))
             bal = float(c.execute("SELECT coins FROM users WHERE id=?", (uid,)).fetchone()["coins"])   # тот же коннект: иначе "database is locked"
-            return {"balance_ton": bal, "safe": False, "win": False, "cell": cell, "bad": bad, "mult": 0, "payout_ton": 0}
+            return {"finished": True, "balance_ton": bal, "hatcoin_balance": 0, "safe": False, "win": False, "cell": cell,
+                    "bad": bad, "opened": opened, "mult": 0, "payout_ton": 0}
         opened.append(cell)
-        mult = _mult(len(opened), int(row["empties"]))
-        c.execute("UPDATE chest_rounds SET opened=?,mult=? WHERE user_id=?", (json.dumps(opened), mult, uid))
-    return {"balance_ton": db.get_coins(uid), "safe": True, "cell": cell, "mult": mult, "opened": opened, "payout_ton": 0}
+        empties = int(row["empties"])
+        mult = _mult(len(opened), empties)
+        bet = float(row["bet"])
+        done = len(opened) >= CELLS - empties          # открыты все безопасные клетки — забираем автоматически
+        c.execute("UPDATE chest_rounds SET opened=?,mult=?,active=? WHERE user_id=?", (json.dumps(opened), mult, 0 if done else 1, uid))
+    if done:
+        payout = round(bet * mult, 4)
+        db.add_coins(uid, payout)
+        db.ledger(0, payout)
+        return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True, "cell": cell,
+                "bad": bad, "opened": opened, "mult": mult, "payout_ton": payout}
+    return {"finished": False, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "cell": cell, "mult": mult,
+            "round": {"empties": empties, "bet": bet, "opened": opened, "mult": mult, "cells": CELLS}}
 
 @app.post("/api/chests/cashout")
 async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
@@ -330,6 +429,7 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
         row = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
         if not row: raise HTTPException(400, detail={"code": "no_round"})
         opened = json.loads(row["opened"] or "[]")
+        bad = json.loads(row["bad"] or "[]")
         if not opened: raise HTTPException(400, "open first")
         mult = float(row["mult"] or 1)
         payout = round(float(row["bet"]) * mult, 4)
@@ -338,7 +438,8 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
             raise HTTPException(400, detail={"code": "no_round"})
     db.add_coins(uid, payout)
     db.ledger(0, payout)
-    return {"balance_ton": db.get_coins(uid), "win": True, "payout_ton": payout, "mult": mult}
+    return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True,
+            "payout_ton": payout, "mult": mult, "opened": opened, "bad": bad}
 
 @app.post("/api/upgrade")
 async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None = Header(None)):
@@ -423,8 +524,26 @@ async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = He
 @app.post("/api/gifts/catalog")
 async def catalog(request: Request, x_init_data: str | None = Header(None)):
     uid_from(request, x_init_data)
-    return {"items": [{"slug": str(i.get("id")), "name": i.get("name"), "image": i.get("image"),
-                       "price": i.get("price"), "count": i.get("count")} for i in stock()]}
+    items = [{"slug": str(i.get("id")), "name": i.get("name"), "image": i.get("image"), "price_ton": float(i.get("price") or 0),
+              "price": float(i.get("price") or 0), "count": i.get("count"), "popular": int(i.get("count") or 0)}
+             for i in available_stock()]
+    return {"items": items, "margin": GIFT_MARGIN, "price_steps": [], "price_base": 1}
+
+
+class SlugIn(BaseModel):
+    slug: str = ""
+
+
+@app.post("/api/gifts/models")
+async def gift_models(body: SlugIn, request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    g = next((x for x in available_stock() if str(x.get("id")) == str(body.slug)), None)
+    if not g:
+        return {"slug": body.slug, "models": [], "status": "failed"}
+    price = float(g.get("price") or 0)
+    return {"slug": body.slug, "name": g.get("name"), "title": g.get("name"), "image": g.get("image"), "floor": price, "status": "ready",
+            "models": [{"model": g.get("name") or body.slug, "price_ton": price, "image": g.get("image")}]}
+
 
 # ---------- ЗАГЛУШКИ: пути, которые зовёт фронт, но настоящей логики пока нет ----------
 # Возвращают пустые данные, чтобы мини-аппка не падала с «Нет связи с сервером».
