@@ -41,6 +41,7 @@ def init():
               user_id INTEGER PRIMARY KEY, bet REAL, empties INTEGER, bad TEXT, opened TEXT, mult REAL, active INTEGER, created INTEGER);
             CREATE TABLE IF NOT EXISTS user_stats(user_id INTEGER PRIMARY KEY, turnover_ton REAL NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS casino_day(day TEXT PRIMARY KEY, intake REAL DEFAULT 0, payout REAL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS user_kv(user_id INTEGER, k TEXT, v TEXT, PRIMARY KEY(user_id,k));
             CREATE TABLE IF NOT EXISTS spin_log(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chance REAL, cost REAL, win INTEGER, created INTEGER);
         """)
@@ -131,3 +132,26 @@ def parse_user_ref(ref):
     with connect() as c:
         r = c.execute("SELECT id FROM users WHERE lower(username)=lower(?) LIMIT 1", (ref,)).fetchone()
     return int(r["id"]) if r else None
+
+
+def kv_get(uid, key, default=None):
+    import json as _j
+    with connect() as c:
+        r = c.execute("SELECT v FROM user_kv WHERE user_id=? AND k=?", (uid, key)).fetchone()
+    if not r:
+        return default
+    try:
+        return _j.loads(r["v"])
+    except Exception:
+        return default
+
+def kv_set(uid, key, value):
+    import json as _j
+    with connect() as c:
+        c.execute("INSERT INTO user_kv(user_id,k,v) VALUES(?,?,?) ON CONFLICT(user_id,k) DO UPDATE SET v=excluded.v",
+                  (uid, key, _j.dumps(value, ensure_ascii=False)))
+
+def count_games(uid):
+    with connect() as c:
+        n = c.execute("SELECT COUNT(*) FROM spin_log WHERE user_id=?", (uid,)).fetchone()[0]
+    return int(n or 0)
