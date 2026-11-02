@@ -5490,6 +5490,11 @@ html[data-econ] #coinValue,html[data-econ] #balanceValue{display:none!important}
 .rw-ex,.rw-tasks,.rw-gems,.rw-h,.inv-relayer,.inv-tabs,.inv-grid{width:100%;box-sizing:border-box;align-self:stretch}
 #view-menu .menu-grid > #menuRewards{order:100!important}
 </style>
+<style>/* пополнение только звёздами StaticGram; шапка: алмазы слева, монеты справа */
+#depChooseTon,#depChooseCrypto,#depChooseGift{display:none!important}
+html[data-econ] #balanceChip{order:1} html[data-econ] #coinChip{order:2}
+html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
+</style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -6513,7 +6518,7 @@ html[data-econ] #coinValue,html[data-econ] #balanceValue{display:none!important}
         </button>
         <button class="dep-method dep-stars" id="depChooseStars" type="button" data-method="stars">
           <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="Stars" draggable="false"></span>
-          <span class="dep-m-copy"><b>Telegram Stars</b><small>Оплата звёздами через бота</small></span>
+          <span class="dep-m-copy"><b>Звёзды StaticGram</b><small>Оплата звёздами через бота</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
         <button class="dep-method dep-nft" id="depChooseGift" type="button" data-method="nft">
@@ -9015,6 +9020,8 @@ html[data-econ] #coinValue,html[data-econ] #balanceValue{display:none!important}
 let tg = window.Telegram?.WebApp;
 
 const telegramLaunchData = new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
+/* доступ для дополнительных скриптов (награды, инвентарь): раньше они не видели api() и всегда показывали демо */
+window.api = api; window.toast = toast; window.openDeposit = openDeposit; window.refreshState = refresh;
 const $ = (id) => document.getElementById(id);
 
 const I18N = window.I18N || { lang: 'ru', tr: (s) => s, tn: (n) => String(n), setLang() {}, langs: [] };
@@ -13194,8 +13201,11 @@ function syncDepositMethods() {
     ? tr('Отправь подарок на @{account}. Для шляпы доступен выбор: стейкинг или баланс.', { account: giftCfg.account })
     : tr('Сейчас недоступно');
   if (starsCfg) {
-    $('starsRate').textContent = tr('1 GRAM = {n} Stars', { n: starsCfg.per_ton });
-    $('starsLockTitle').textContent = tr('Вывод подарков заблокирован на {n} дн.', { n: starsCfg.lock_days });
+    $('starsRate').textContent = '1 монета = ' + starsCfg.per_ton + ' ★';
+    const lockEl = $('starsLockTitle');
+    const lockBox = lockEl.closest('.dep-lock');
+    if (starsCfg.lock_days > 0) { lockEl.textContent = tr('Вывод подарков заблокирован на {n} дн.', { n: starsCfg.lock_days }); if (lockBox) lockBox.style.display = ''; }
+    else if (lockBox) lockBox.style.display = 'none';
   }
 }
 
