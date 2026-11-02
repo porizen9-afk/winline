@@ -146,6 +146,7 @@ def main_menu_kb() -> dict:
     return kb(
         [
             [("🔍 Игрок", "u:ask"), ("🏆 Топ", "top")],
+            [("🎁 Подарки апгрейда", "ug:list:0")],
             [("📦 Склад", "stock"), ("📋 Очередь", "queue")],
             [("⭐ Выдать ★", "gs:ask"), ("⭐ Забрать ★", "ts:ask")],
             [("🎁 Выдать гифт", "gg:ask"), ("🗑 Забрать гифт", "tg:ask")],
@@ -227,6 +228,229 @@ async def patch(uid: int, text: str, markup=None, toast: str = ""):
         data = await send(chat_id, text, markup if markup is not None else back_kb())
         mid = (data.get("result") or {}).get("message_id")
         STATE[uid]["msg_id"] = mid
+
+
+import db as dbm
+UG_PAGE = 8
+
+
+async def on_pre_checkout(q: dict):
+    """Перед списанием звёзд: подтверждаем только известный неоплаченный заказ с точной суммой."""
+    ok, err = False, "Заказ не найден"
+    try:
+        d = dbm.deposit_get(q.get("invoice_payload") or "")
+        if d and d["status"] == "pending" and int(q.get("total_amount") or 0) == int(d["stars"]) \
+                and q.get("currency") == "XTR" and int(q["from"]["id"]) == int(d["user_id"]):
+            ok = True
+        else:
+            err = "Счёт устарел или уже оплачен"
+    except Exception as e:
+        print("pre_checkout error", e)
+    p = {"pre_checkout_query_id": q["id"], "ok": ok}
+    if not ok:
+        p["error_message"] = err
+    await api("answerPreCheckoutQuery", **p)
+
+
+async def on_payment(uid: int, chat_id: int, pay: dict):
+    """Звёзды пришли — начисляем монеты ровно один раз."""
+    res = dbm.deposit_credit(pay.get("invoice_payload") or "", int(pay.get("total_amount") or 0),
+                             pay.get("telegram_payment_charge_id") or "")
+    if res:
+        who, amount = res
+        print(f"deposit credited: user {who} +{amount}")
+        await send(chat_id, f"✅ Зачислено <b>{amount:g}</b> монет. Открой игру и играй!")
+        for aid in set(ADMIN_IDS) | ({int(OWNER_ID)} if OWNER_ID else set()):
+            await send(aid, f"💰 Пополнение: игрок <code>{who}</code> +{amount:g} монет ({pay.get('total_amount')}★)")
+    else:
+        print("payment ignored/duplicate", pay)
+
+
+async def fetch_image(file_id: str, slug: str):
+    """Скачивает картинку из StaticGram и кладёт PNG 256×256 в папку подарков. Возвращает URL или None."""
+    r = await api("getFile", file_id=file_id)
+    path = (r.get("result") or {}).get("file_path")
+    if not path:
+        return None
+    out_dir = Path(os.getenv("GIFTS_IMG_DIR", "data/gifts"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        async with httpx.AsyncClient(timeout=60) as h:
+            resp = await h.get(f"{API_BASE}/file/bot{BOT_TOKEN}/{path}")
+        if not resp.is_success or not resp.content:
+            return None
+        raw = resp.content
+        try:
+            Image.open(io.BytesIO(raw)).convert("RGBA").resize((256, 256)).save(out_dir / f"{slug}.png")
+        except Exception:
+            (out_dir / f"{slug}.png").write_bytes(raw)
+        return f"/static/gifts/{slug}.png?v={int(time.time())}"
+    except Exception as e:
+        print("fetch_image", slug, e)
+        return None
+
+
+async def ug_import(uid: int):
+    """Подарки StaticGram (getAvailableGifts) → каталог апгрейда. Новые добавляются ВЫКЛЮЧЕННЫМИ."""
+    r = await api("getAvailableGifts")
+    gifts = ((r.get("result") or {}).get("gifts")) or []
+    if not gifts:
+        return 0, 0, (r.get("description") or "StaticGram не вернул подарки")
+    added = skipped = 0
+    for g in gifts:
+        gid = str(g.get("id") or "")
+        stars = int(g.get("star_count") or 0)
+        if not gid or stars <= 0:
+            continue
+        slug = ("sg_" + gid)[:30]
+        if dbm.catalog_get(slug):
+            skipped += 1
+            continue
+        st = g.get("sticker") or {}
+        emoji = st.get("emoji") or "🎁"
+        fid = (st.get("thumbnail") or {}).get("file_id") or (st.get("file_id") if not (st.get("is_animated") or st.get("is_video")) else None)
+        image = (await fetch_image(fid, slug)) if fid else None
+        dbm.catalog_add(slug, f"{emoji} Подарок {stars}★", image or "/static/img/gift.png", stars, sg_id=gid, enabled=0)
+        added += 1
+    return added, skipped, ""
+
+
+async def on_photo(chat_id: int, uid: int, msg: dict):
+    """Админ шлёт фото с подписью «Название | цена» — подарок появляется в апгрейде."""
+    if not is_admin(uid):
+        await send_app(chat_id)
+        return
+    cap = (msg.get("caption") or "").strip()
+    if "|" not in cap:
+        await send(chat_id, "Чтобы добавить подарок, пришли фото с подписью:\n<code>Название | цена</code>\nнапример: <code>Plush Pepe | 120</code>")
+        return
+    name, _, price_s = cap.partition("|")
+    name = name.strip()[:40]
+    try:
+        price = float(price_s.replace(",", ".").strip())
+        if not (price > 0) or price > 1_000_000:
+            raise ValueError
+    except ValueError:
+        await send(chat_id, "Цена должна быть числом больше 0, например <code>Plush Pepe | 120</code>")
+        return
+    file_id = (msg.get("photo") or [{}])[-1].get("file_id") if msg.get("photo") else (msg.get("document") or {}).get("file_id")
+    import re as _re2
+    slug = ("up_" + _re2.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_"))[:28] or "up_gift"
+    image = await fetch_image(file_id, slug)
+    if not image:
+        await send(chat_id, "Не удалось скачать картинку у StaticGram. Попробуй ещё раз.")
+        return
+    with dbm.connect() as c:
+        c.execute("DELETE FROM catalog_gifts WHERE slug=?", (slug,))
+    dbm.catalog_seed([(slug, name, image, price)])
+    ext = "png"
+    await send(chat_id, f"✅ Подарок <b>{name}</b> ({price:g}★) добавлен в апгрейд.\n«🎁 Подарки апгрейда» → там можно выключить или изменить цену.")
+
+
+def ug_view(page: int):
+    items = dbm.catalog_list()
+    pages = max(1, (len(items) + UG_PAGE - 1) // UG_PAGE)
+    page = max(0, min(page, pages - 1))
+    chunk = items[page * UG_PAGE:(page + 1) * UG_PAGE]
+    on = sum(1 for i in items if i["enabled"])
+    text = (f"🎁 <b>Подарки апгрейда</b> ({on} из {len(items)} включено)\n"
+            f"Страница {page + 1}/{pages}\n\n"
+            "Нажми на название — включить/выключить в игре.\n✏️ — изменить цену (в ★).")
+    rows = []
+    for it in chunk:
+        mark = "✅" if it["enabled"] else "🚫"
+        price = f"{it['price']:g}"
+        rows.append([(f"{mark} {it['name'][:18]} · {price}★", f"ug:t:{it['slug']}:{page}"), ("✏️", f"ug:p:{it['slug']}:{page}")])
+    nav = []
+    if page > 0:
+        nav.append(("◀️", f"ug:list:{page - 1}"))
+    if page < pages - 1:
+        nav.append(("▶️", f"ug:list:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    fee = dbm.get_setting("gift_withdraw_fee", os.getenv("GIFT_WITHDRAW_FEE", "5"))
+    rows.append([("📥 Импорт подарков StaticGram", "ug:imp")])
+    rows.append([(f"💸 Комиссия вывода подарка: {fee}★", "ug:fee")])
+    rows.append([("« Меню", "menu")])
+    text += "\n\n➕ Новый подарок: пришли сюда фото с подписью <code>Название | цена</code>."
+    return text, kb(rows)
+
+
+async def ug_callback(uid: int, chat_id: int, mid, data: str):
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "list":
+        text, markup = ug_view(int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0)
+        STATE[uid]["mode"] = None
+        await patch(uid, text, markup)
+        return
+    if action == "imp":
+        await patch(uid, "⏳ Загружаю подарки StaticGram…", kb([[("« Подарки", "ug:list:0")]]))
+        added, skipped, err = await ug_import(uid)
+        bal = ""
+        try:
+            br = await api("getMyStarBalance")
+            bal = f"\n⭐ Баланс звёзд бота: <b>{(br.get('result') or {}).get('amount', '?')}</b> (с него идёт вывод монет игрокам; подарки отправляет юзербот из своего банка)"
+        except Exception:
+            pass
+        if err:
+            await patch(uid, f"Не вышло: {err}", kb([[("« Подарки", "ug:list:0")]]))
+        else:
+            await patch(uid, f"✅ Добавлено подарков: <b>{added}</b>, уже были: {skipped}.\nНовые <b>выключены</b> — включи нужные в списке.{bal}",
+                        kb([[("🎁 К списку", "ug:list:0")]]))
+        return
+    if action == "fee":
+        STATE[uid]["mode"] = "ug_fee"
+        cur = dbm.get_setting("gift_withdraw_fee", os.getenv("GIFT_WITHDRAW_FEE", "5"))
+        await patch(uid, f"💸 Комиссия за вывод подарка сейчас: <b>{cur}★</b>.\nПришли новую сумму числом (0 — бесплатно):",
+                    kb([[("« Отмена", "ug:list:0")]]))
+        return
+    slug = parts[2] if len(parts) > 2 else ""
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    g = dbm.catalog_get(slug)
+    if not g:
+        await patch(uid, "Подарок не найден.", back_kb())
+        return
+    if action == "t":
+        dbm.catalog_set(slug, enabled=not g["enabled"])
+        text, markup = ug_view(page)
+        await patch(uid, text, markup)
+        return
+    if action == "p":
+        STATE[uid]["mode"] = "ug_price"
+        STATE[uid]["ug_slug"] = slug
+        STATE[uid]["ug_page"] = page
+        await patch(uid, f"✏️ <b>{g['name']}</b>\nСейчас: <b>{g['price']:g}★</b>\nПришли новую цену числом (например <code>35</code>):",
+                    kb([[("« Отмена", f"ug:list:{page}")]]))
+        return
+
+
+async def wd_callback(uid: int, chat_id: int, mid, data: str):
+    parts = data.split(":")
+    if len(parts) < 3 or not parts[2].isdigit():
+        return
+    qid = int(parts[2])
+    with db() as c:
+        q = c.execute("SELECT * FROM gift_queue WHERE id=?", (qid,)).fetchone()
+        if not q or q["status"] != "manual":
+            await edit(chat_id, mid, f"Заявка #{qid} уже обработана.", None)
+            return
+        if parts[1] == "ok":
+            c.execute("UPDATE gift_queue SET status='done', updated=? WHERE id=?", (int(time.time()), qid))
+            if q["inv_row"]:
+                c.execute("UPDATE inventory SET status='sent' WHERE rowid_=?", (q["inv_row"],))
+            note, msg = f"✅ Заявка #{qid}: выдан (отметил {uid}).", "✅ Твой подарок выдан! Проверь Telegram."
+        else:
+            c.execute("UPDATE gift_queue SET status='rejected', updated=? WHERE id=?", (int(time.time()), qid))
+            fee = float(q["fee"] or 0)
+            if fee > 0:
+                c.execute("UPDATE users SET coins=coins+? WHERE id=?", (fee, int(q["user_id"])))
+            if q["inv_row"]:
+                c.execute("UPDATE inventory SET status='won' WHERE rowid_=?", (q["inv_row"],))
+            note, msg = f"↩️ Заявка #{qid}: возвращена игроку (отметил {uid}).", "↩️ Вывод подарка отклонён, он снова в твоих призах" + (f", комиссия {fee:g}★ возвращена." if fee > 0 else ".")
+        c.commit()
+    await edit(chat_id, mid, note, None)
+    await send(int(q["user_id"]), msg)
 
 
 async def on_callback(cq: dict):
@@ -315,6 +539,16 @@ async def on_callback(cq: dict):
             f"Техперерыв: {'ВКЛ' if maintenance_on() else 'выкл'}",
             back_kb(),
         )
+        return
+
+    # ---- подарки апгрейда: вкл/выкл и цена ----
+    if data.startswith("ug:"):
+        await ug_callback(uid, chat_id, mid, data)
+        return
+
+    # ---- заявки на вывод подарка ----
+    if data.startswith("wd:"):
+        await wd_callback(uid, chat_id, mid, data)
         return
 
     # modes that wait for text
@@ -436,6 +670,35 @@ async def on_text(chat_id: int, uid: int, text: str):
         await patch(uid, f"{sign}{amount}★ → {target}\n\n" + profile_text(target), back_kb())
         return
 
+    if mode == "ug_fee":
+        try:
+            fee = float(text.replace(",", ".").strip())
+            if fee < 0 or fee > 100000:
+                raise ValueError
+        except ValueError:
+            await patch(uid, "Нужно число от 0, например <code>5</code>.", kb([[("« Отмена", "ug:list:0")]]))
+            return
+        dbm.set_setting("gift_withdraw_fee", f"{fee:g}")
+        st["mode"] = None
+        t, m = ug_view(0)
+        await patch(uid, f"Комиссия обновлена: <b>{fee:g}★</b>\n\n" + t, m)
+        return
+
+    if mode == "ug_price":
+        slug = st.get("ug_slug")
+        try:
+            price = float(text.replace(",", ".").strip())
+            if not (price > 0) or price > 1_000_000:
+                raise ValueError
+        except ValueError:
+            await patch(uid, "Нужно число больше 0, например <code>35</code>.", kb([[("« Отмена", f"ug:list:{st.get('ug_page', 0)}")]]))
+            return
+        dbm.catalog_set(slug, price=price)
+        st["mode"] = None
+        t, m = ug_view(int(st.get("ug_page") or 0))
+        await patch(uid, f"Цена обновлена: <b>{price:g}★</b>\n\n" + t, m)
+        return
+
     if mode == "give_gift":
         parts = text.split(maxsplit=2)
         if len(parts) < 2:
@@ -534,12 +797,15 @@ async def loop_admin():
                 "getUpdates",
                 offset=offset,
                 timeout=30,
-                allowed_updates=["message", "callback_query"],
+                allowed_updates=["message", "callback_query", "pre_checkout_query"],
             )
             for upd in data.get("result") or []:
                 offset = max(offset, upd["update_id"] + 1)
                 if "callback_query" in upd:
                     await on_callback(upd["callback_query"])
+                    continue
+                if "pre_checkout_query" in upd:
+                    await on_pre_checkout(upd["pre_checkout_query"])
                     continue
                 msg = upd.get("message") or {}
                 if not msg:
@@ -553,6 +819,12 @@ async def loop_admin():
                         c.execute("UPDATE users SET username=? WHERE id=?", (un, uid))
                 text = msg.get("text") or ""
                 chat_id = int((msg.get("chat") or {}).get("id") or uid)
+                if msg.get("successful_payment"):
+                    await on_payment(uid, chat_id, msg["successful_payment"])
+                    continue
+                if msg.get("photo") or (msg.get("document") or {}).get("mime_type", "").startswith("image/"):
+                    await on_photo(chat_id, uid, msg)
+                    continue
                 if text:
                     await on_text(chat_id, uid, text)
         except Exception as e:
@@ -585,7 +857,7 @@ OUT = Path(os.getenv("RELAYER_JSON", "data/relayer_gifts.json"))
 IMG_DIR = Path(os.getenv("GIFTS_IMG_DIR", "data/gifts"))
 IMG_URL = os.getenv("GIFTS_IMG_URL", "/static/gifts")
 USERNAME = os.getenv("RELAYER_USERNAME", "relayer")
-PERIOD = int(os.getenv("USERBOT_PERIOD", "60"))
+PERIOD = int(os.getenv("USERBOT_PERIOD", "15"))
 ADMIN_IDS = [
     int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()
 ]
@@ -658,20 +930,26 @@ async def snapshot(client) -> dict:
     }
 
 
-async def transfer_one(client, user_id: int, gift_id: str, saved_msg_id: int | None) -> tuple[bool, str]:
-    """Пытается передать один сохранённый гифт игроку.
-    Точный MTProto-метод зависит от версии слоя StaticGram; при ошибке — текст в error.
-    """
+def _all_admin_ids():
+    ids = set(ADMIN_IDS)
+    if OWNER_ID:
+        ids.add(int(OWNER_ID))
     try:
-        # Telegram/StaticGram: TransferStarGift (имя может отличаться на форке)
-        # Пробуем через payments.TransferStarGiftRequest если есть в telethon.
+        with db() as c:
+            ids.update(int(r["user_id"]) for r in c.execute("SELECT user_id FROM admins"))
+    except Exception:
+        pass
+    return ids
+
+
+async def transfer_one(client, user_id: int, gift_id: str, saved_msg_id: int | None) -> tuple[bool, str]:
+    """Передаёт игроку подарок, который уже лежит у релеера (сохранённый)."""
+    try:
         Transfer = getattr(functions.payments, "TransferStarGiftRequest", None) or getattr(
             functions.payments, "TransferGiftRequest", None
         )
         if Transfer is None:
             return False, "TransferStarGiftRequest not in telethon — обновите клиент/staticgram"
-        kwargs = {"to_id": user_id}
-        # разные сигнатуры в разных слоях
         try:
             await client(Transfer(stargift=saved_msg_id, to_id=user_id))
         except TypeError:
@@ -681,14 +959,48 @@ async def transfer_one(client, user_id: int, gift_id: str, saved_msg_id: int | N
         return False, str(e)[:300]
 
 
+async def buy_and_send(client, user_id: int, username: str, gift_id: str) -> tuple[bool, str]:
+    """Как в Telegram: юзербот покупает подарок за звёзды СВОЕГО банка и отправляет игроку."""
+    try:
+        from telethon.tl import types as tl_types
+        inv_cls = getattr(tl_types, "InputInvoiceStarGift", None)
+        if inv_cls is None:
+            return False, "telethon слишком старый для отправки подарков (pip install -U telethon)"
+        peer, last = None, None
+        for ref in (("@" + username.lstrip("@")) if username else None, user_id):
+            if not ref:
+                continue
+            try:
+                peer = await client.get_input_entity(ref)
+                break
+            except Exception as e:
+                last = e
+        if peer is None:
+            return False, f"no_peer: {str(last)[:120]}"
+        inv = inv_cls(peer=peer, gift_id=int(gift_id), hide_name=False, include_upgrade=False)
+        form = await client(functions.payments.GetPaymentFormRequest(invoice=inv))
+        await client(functions.payments.SendStarsFormRequest(form_id=form.form_id, invoice=inv))
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def _why(err: str):
+    """(текст игроку, текст админам)"""
+    e = err or ""
+    if "BALANCE_TOO_LOW" in e or "BALANCE" in e.upper():
+        return "Подарок скоро выдадим, попробуй чуть позже.", "⚠️ В банке юзербота не хватает звёзд на подарок. Пополни баланс звёзд аккаунта-юзербота."
+    if e.startswith("no_peer") or "PEER_ID_INVALID" in e or "USERNAME" in e.upper():
+        return "Не получилось найти тебя для отправки. Задай username в настройках Telegram и напиши аккаунту релеера, потом попробуй снова.", f"⚠️ Юзербот не нашёл получателя: {e[:100]}"
+    return "Не удалось отправить подарок, попробуй позже.", f"⚠️ Ошибка отправки подарка: {e[:160]}"
+
+
 async def process_queue(client) -> None:
     if not Path(DB_PATH).exists():
         return
     con = db()
     try:
-        rows = con.execute(
-            "SELECT * FROM gift_queue WHERE status='pending' ORDER BY id ASC LIMIT 5"
-        ).fetchall()
+        rows = con.execute("SELECT * FROM gift_queue WHERE status='pending' ORDER BY id ASC LIMIT 5").fetchall()
     except sqlite3.OperationalError:
         con.close()
         return
@@ -696,7 +1008,7 @@ async def process_queue(client) -> None:
         con.close()
         return
 
-    # актуальный склад для saved_ids
+    # актуальный склад (сохранённые подарки релеера) — вдруг нужный уже лежит у юзербота
     try:
         snap = await snapshot(client)
         OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -707,68 +1019,51 @@ async def process_queue(client) -> None:
         by_id = {}
 
     for row in rows:
-        qid = row["id"]
-        uid = row["user_id"]
+        qid, uid = row["id"], row["user_id"]
         gift_id = str(row["gift_id"])
         inv_row = row["inv_row"]
-        con.execute(
-            "UPDATE gift_queue SET status='sending', updated=? WHERE id=?",
-            (int(time.time()), qid),
-        )
+        fee = float(row["fee"] or 0) if "fee" in row.keys() else 0.0
+        con.execute("UPDATE gift_queue SET status='sending', updated=? WHERE id=?", (int(time.time()), qid))
         con.commit()
 
+        u = con.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+        username = (u["username"] if u else "") or ""
+        cat = None
+        try:
+            cat = con.execute("SELECT name FROM catalog_gifts WHERE sg_id=? LIMIT 1", (gift_id,)).fetchone()
+        except sqlite3.OperationalError:
+            pass
         item = by_id.get(gift_id)
-        if not item or int(item.get("count") or 0) < 1:
-            err = "нет на складе релеера"
-            con.execute(
-                "UPDATE gift_queue SET status='failed', error=?, updated=? WHERE id=?",
-                (err, int(time.time()), qid),
-            )
-            if inv_row:
-                con.execute(
-                    "UPDATE inventory SET status='won' WHERE rowid_=?", (inv_row,)
-                )
-            con.commit()
-            await bot_send(
-                uid,
-                f"⏳ Подарка сейчас <b>нет на складе</b> релеера.\n"
-                f"Подождите пополнения и нажмите «Забрать» ещё раз.",
-            )
-            continue
+        name = (cat["name"] if cat else None) or (item or {}).get("name") or gift_id
 
-        saved_ids = [x for x in (item.get("saved_ids") or []) if x]
-        saved = saved_ids[0] if saved_ids else None
-        ok, err = await transfer_one(client, uid, gift_id, saved)
-        if ok:
-            con.execute(
-                "UPDATE gift_queue SET status='done', error='', updated=? WHERE id=?",
-                (int(time.time()), qid),
-            )
-            if inv_row:
-                con.execute(
-                    "UPDATE inventory SET status='sent' WHERE rowid_=?", (inv_row,)
-                )
-            con.commit()
-            link = MINIAPP_URL or f"https://staticgram.top/{USERNAME}"
-            await bot_send(
-                uid,
-                f"✅ Подарок <b>{item.get('name', gift_id)}</b> отправлен в ваш профиль.\n"
-                f"Открыть: {link}",
-            )
+        if item and int(item.get("count") or 0) >= 1:
+            saved_ids = [x for x in (item.get("saved_ids") or []) if x]
+            ok, err = await transfer_one(client, uid, gift_id, saved_ids[0] if saved_ids else None)
+            if not ok:                               # не вышло передать — купим и отправим
+                ok, err = await buy_and_send(client, uid, username, gift_id)
         else:
-            con.execute(
-                "UPDATE gift_queue SET status='failed', error=?, updated=? WHERE id=?",
-                (err, int(time.time()), qid),
-            )
+            ok, err = await buy_and_send(client, uid, username, gift_id)
+
+        if ok:
+            con.execute("UPDATE gift_queue SET status='done', error='', updated=? WHERE id=?", (int(time.time()), qid))
             if inv_row:
-                con.execute(
-                    "UPDATE inventory SET status='won' WHERE rowid_=?", (inv_row,)
-                )
+                con.execute("UPDATE inventory SET status='sent' WHERE rowid_=?", (inv_row,))
             con.commit()
-            await bot_send(
-                uid,
-                f"⚠️ Не удалось отправить подарок: {err[:200]}\nПопробуйте позже.",
-            )
+            await bot_send(uid, f"✅ Подарок <b>{name}</b> отправлен тебе в Telegram!")
+            for aid in _all_admin_ids():
+                await bot_send(aid, f"✅ Юзербот отправил «{name}» игроку <code>{uid}</code> (заявка #{qid}).")
+        else:
+            con.execute("UPDATE gift_queue SET status='failed', error=?, updated=? WHERE id=?", (err[:300], int(time.time()), qid))
+            if inv_row:
+                con.execute("UPDATE inventory SET status='won' WHERE rowid_=?", (inv_row,))
+            if fee > 0:                               # вывод не удался — комиссию возвращаем
+                con.execute("UPDATE users SET coins=coins+? WHERE id=?", (fee, uid))
+            con.commit()
+            print("gift send failed:", qid, err)
+            to_user, to_admin = _why(err)
+            await bot_send(uid, f"⚠️ {to_user}" + (f"\nКомиссия {fee:g}★ возвращена." if fee > 0 else ""))
+            for aid in _all_admin_ids():
+                await bot_send(aid, f"{to_admin}\nЗаявка #{qid}, игрок <code>{uid}</code>, подарок «{name}».")
     con.close()
 
 
@@ -820,13 +1115,16 @@ async def userbot_main():
 
     async with client:
         print("relayer userbot online")
+        last_snap = 0.0
         while True:
-            try:
-                snap = await snapshot(client)
-                OUT.write_text(json.dumps(snap, ensure_ascii=False), "utf-8")
-                print("stock", len(snap["stock"]), "items")
-            except Exception as e:
-                print("snapshot error:", e)
+            if time.time() - last_snap >= 60:
+                try:
+                    snap = await snapshot(client)
+                    OUT.write_text(json.dumps(snap, ensure_ascii=False), "utf-8")
+                    print("stock", len(snap["stock"]), "items")
+                except Exception as e:
+                    print("snapshot error:", e)
+                last_snap = time.time()
             try:
                 await process_queue(client)
             except Exception as e:
