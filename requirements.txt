@@ -2,5 +2,5 @@ fastapi
 uvicorn[standard]
 httpx
 pydantic
-telethon
+telethon>=1.38
 pillow
