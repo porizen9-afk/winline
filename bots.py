@@ -605,30 +605,41 @@ async def setup_menu_button() -> None:
     try:
         r = await api("setChatMenuButton", menu_button={"type": "web_app", "text": "Играть", "web_app": {"url": APP_URL}})
         print("menu button:", "ok" if r.get("ok") else r.get("description"))
-        await api("setMyCommands", commands=[{"command": "start", "description": "Открыть игру"}])
+        await api("setMyCommands", commands=[{"command": "start", "description": "Открыть игру"}, {"command": "admin", "description": "Админ-панель"}, {"command": "id", "description": "Мой Telegram ID"}])
     except Exception as e:
         print("menu button error:", e)
 
 
 async def on_text(chat_id: int, uid: int, text: str):
     t = text.strip()
-    if t.split("@")[0] == "/id":      # узнать свой ID для OWNER_ID / ADMIN_IDS
-        await send(chat_id, f"Ваш ID: <code>{uid}</code>")
-        return
-    if t.startswith("/start"):
-        await send_app(chat_id, "Админ-панель: /admin" if is_admin(uid) else "")
-        return
-    if not is_admin(uid):
-        await send_app(chat_id)
+    cmd = t.split()[0].split("@")[0].lower() if t else ""
+
+    # любой может узнать свой id
+    if cmd == "/id":
+        await send(chat_id, f"Ваш ID: <code>{uid}</code>\nOWNER_ID сейчас: <code>{OWNER_ID}</code>")
         return
 
-    if t in ("/admin", "админ"):
+    # /start — только приветствие и кнопка игры (без спама админкой на каждый чих)
+    if cmd == "/start" or t.startswith("/start"):
+        extra = "Админ-панель: /admin" if is_admin(uid) else ""
+        await send_app(chat_id, extra)
+        return
+
+    # /admin или «админ»
+    if cmd in ("/admin", "админ") or t.lower() == "админ":
+        if not is_admin(uid):
+            await send(chat_id, "Нет доступа.")
+            return
         await show_menu(chat_id, STATE.get(uid, {}).get("msg_id"), uid)
         return
 
+    # не админ — на обычные сообщения НЕ отвечаем (антиспам)
+    if not is_admin(uid):
+        return
+
+    # админ без активного режима ввода — игнор случайного текста (меню только по /admin)
     mode = (STATE.get(uid) or {}).get("mode")
     if not mode:
-        await show_menu(chat_id, STATE.get(uid, {}).get("msg_id"), uid)
         return
 
     st = STATE.setdefault(uid, {})
