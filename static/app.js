@@ -1387,7 +1387,8 @@ try{
     if (!$('#coinMine')) {
       const a = document.createElement('span'); a.id = 'coinMine'; $('#coinValue').after(a);
       const g = document.createElement('span'); g.id = 'gemMine'; $('#balanceValue').after(g);
-      cc.title = 'Монетки: 1 монета = 1 ★'; bc.title = 'Алмазы — награды';
+      cc.title = 'Монеты: 1 монета = 1 ★ — нажми, чтобы пополнить'; bc.title = 'Алмазы — награды';
+      const plus = bc.querySelector('.bal-plus'); if (plus) cc.appendChild(plus);
       document.documentElement.setAttribute('data-econ', '1');
     }
     $('#coinMine').textContent = coins().toFixed(2);
@@ -1396,7 +1397,9 @@ try{
   document.addEventListener('click', (e) => {
     const t = e.target.closest && e.target.closest('#coinChip,#balanceChip'); if (!t) return;
     e.preventDefault(); e.stopImmediatePropagation();
-    if (t.id === 'balanceChip') openRewards(); else { const p = document.querySelector('.tab[data-view="profile"]'); p && p.click(); }
+    if (t.id === 'balanceChip') openRewards();
+    else if (typeof window.openDeposit === 'function') window.openDeposit();
+    else { const p = document.querySelector('.tab[data-view="profile"]'); p && p.click(); }
   }, true);
 
   /* ---------- экран «Награды» ---------- */
@@ -1462,7 +1465,18 @@ try{
       <p>${ok ? `Можно вывести ровно ${WITHDRAW_STEP} ★ за раз. Спишется ${WITHDRAW_STEP} монет.` : `Нужно ещё ${fmt(left)} монет до вывода. Вывод — ровно ${WITHDRAW_STEP} ★ за раз.`}</p>
       <button class="wd-btn" type="button" ${ok ? '' : 'disabled'}>ВЫВЕСТИ ${WITHDRAW_STEP} ★</button>
       <div class="wd-mini"><button type="button" id="wdInv">🎁 ИНВЕНТАРЬ</button><button type="button" id="wdRw">💎 НАГРАДЫ</button></div>`;
-    $('.wd-btn', card).onclick = async () => { try { await api('/api/withdraw', { stars: WITHDRAW_STEP }); } catch (_) {} };
+    $('.wd-btn', card).onclick = async (ev) => {
+      const btn = ev.currentTarget; btn.disabled = true;
+      try {
+        await api('/api/withdraw', { stars: WITHDRAW_STEP });
+        if (window.toast) window.toast('Заявка на вывод ' + WITHDRAW_STEP + ' ★ отправлена');
+      } catch (e) {
+        const known = { insufficient_funds: 'Недостаточно монет', cap: 'Дневной лимит вывода исчерпан' };
+        if (window.toast) window.toast(known[e && e.code] || (e && e.message) || 'Не удалось вывести', true);
+      }
+      if (window.refreshState) window.refreshState();
+      btn.disabled = false;
+    };
     $('#wdInv', card).onclick = () => window.RelayerInventory && window.RelayerInventory.open();
     $('#wdRw', card).onclick = openRewards;
     anchor.after(card);
