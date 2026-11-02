@@ -3,7 +3,7 @@ Winline Halloween — один server.py (как старый).
 Запуск: uvicorn server:app --host 0.0.0.0 --port $PORT
 """
 from __future__ import annotations
-import hashlib, hmac, json, os, random, time, uuid
+import hashlib, hmac, json, math, os, random, time, uuid
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 import db
 from config import (
     BOT_TOKEN, OWNER_ID, STATICGRAM_API, RELAYER_JSON, WITHDRAW_STEP,
-    DAILY_WITHDRAW_CAP, MIN_BET, MAX_BET, MINES_HOUSE, DEV_USER_ID, WEBAPP_URL,
+    DAILY_WITHDRAW_CAP, MIN_BET, MAX_BET, MINES_HOUSE, DEV_USER_ID, WEBAPP_URL, ADMIN_IDS,
 )
 
 db.init()
@@ -93,7 +93,8 @@ UPGRADE_BASE = {2: 0.48, 5: 0.15, 10: 0.05}
 UPGRADE_LOSS = {2:{2:0.04,3:0.07,4:0.09,5:0.11},5:{3:0.015,4:0.025,5:0.035},10:{3:0.008,4:0.012,5:0.018}}
 CELLS = 25
 HAT_VALUE = float(os.getenv("HAT_VALUE", "12"))        # во сколько GRAM оценивается обычная шляпа
-MINES_RTP = float(os.getenv("MINES_RTP", "0.95"))       # возврат игрокам в минах (0.95 = комиссия 5%)
+MINES_RTP = float(os.getenv("MINES_RTP", "0.95"))
+MINES_MAX_MULT = float(os.getenv("MINES_MAX_MULT", "1000"))      # потолок множителя (защита банка от x50000 на 20 минах)       # возврат игрокам в минах (0.95 = комиссия 5%)
 CX_CHOICES = [1, 3, 5, 10, 15, 20]
 CHANCE_GRID = [{"chance": round(p / 100, 2), "cost_ton": round(HAT_VALUE * p / 100, 2)} for p in range(5, 71)]
 
@@ -103,7 +104,7 @@ def _mult_at(empties: int, k: int) -> float:
     surv = 1.0
     for i in range(k):
         surv *= (CELLS - empties - i) / (CELLS - i)
-    return round(MINES_RTP / surv, 2) if surv > 0 else 0.0
+    return min(MINES_MAX_MULT, round(MINES_RTP / surv, 2)) if surv > 0 else 0.0
 
 
 def _ladder() -> dict:
@@ -148,7 +149,12 @@ def uid_from(request: Request, x_init: str | None = None) -> int:
     uid = verify_init(raw.strip())
     if db.get_setting("maintenance") == "1" and not db.is_admin(uid):
         raise HTTPException(503, "maintenance")
-    db.ensure_user(uid)
+    uname = ""
+    try:
+        uname = (json.loads(dict(parse_qsl(raw.strip())).get("user") or "{}").get("username") or "")
+    except Exception:
+        pass
+    db.ensure_user(uid, uname)
     with db.connect() as c:
         r = c.execute("SELECT banned FROM users WHERE id=?", (uid,)).fetchone()
         if r and r["banned"]:
@@ -168,7 +174,50 @@ GIFT_MARGIN = float(os.getenv("GIFT_MARGIN", "0.08"))    # наценка на �
 HOUSE_EDGE = float(os.getenv("HOUSE_EDGE", "0.08"))      # комиссия обычной шляпы
 
 
+import re as _re
+_DEFAULT_PRICES = {"dragon": 60, "frost": 50, "thunder": 50, "crystal": 45, "sun": 45, "rainbow": 40, "trident": 40, "sword": 35,
+                   "skeleton hand": 80, "hall ember poker": 70, "hall emerald scepter": 90, "hall host axe": 70, "basement wrench": 40}
+
+
+def _gift_name(stem: str) -> str:
+    n = _re.sub(r"[-_]?(icon|pixel)\b", "", stem)
+    n = _re.sub(r"[-_]v\d+$", "", n)
+    n = _re.sub(r"[-_]+", " ", n).strip()
+    return n.title() or stem
+
+
+def seed_catalog():
+    """Подарки апгрейда берём из картинок static/gifts/* (имя файла = название подарка).
+    Новые файлы добавляются сами; цены и «вкл/выкл» меняются в админ-боте и не перезатираются.
+    Подарки можно добавлять и из бота: админ шлёт фото с подписью «Название | цена»."""
+    items = []
+    seen = set()
+    for folder, urlbase in ((ASSETS / "gifts", "/static/gifts"),):
+        if not folder.is_dir():
+            continue
+        for f in sorted(folder.iterdir()):
+            if f.suffix.lower() not in (".png", ".webp"):
+                continue
+            if "pixel" in f.stem:                       # дубль иконки
+                continue
+            slug = _re.sub(r"[^a-z0-9]+", "_", _re.sub(r"[-_]?icon", "", f.stem.lower())).strip("_")[:28]
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            name = _gift_name(f.stem)
+            price = _DEFAULT_PRICES.get(name.lower(), 20)
+            items.append((slug, name, f"{urlbase}/{f.name}", price))
+    if items:
+        db.catalog_seed(items)
+
+
 def available_stock():
+    """Подарки апгрейда = включённые в каталоге (ассеты). count большой — штучного склада нет."""
+    return [{"id": g["slug"], "name": g["name"], "image": g["image"], "price": g["price"], "count": 9999, "sg_id": g.get("sg_id", "")}
+            for g in db.catalog_list(enabled_only=True) if g["price"] > 0]
+
+
+def _old_available_stock():
     """Склад релеера минус подарки, которые уже выиграны игроками и ждут отправки."""
     st = stock()
     try:
@@ -197,6 +246,16 @@ async def bot_api(method: str, payload: dict):
     except Exception as e:
         return False, str(e)[:200]
 
+async def bot_raw(method: str, payload: dict) -> dict:
+    if not BOT_TOKEN:
+        return {"ok": False, "description": "no token"}
+    try:
+        async with httpx.AsyncClient(timeout=20) as h:
+            r = await h.post(f"{STATICGRAM_API}/bot{BOT_TOKEN}/{method}", json=payload)
+        return r.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)[:200]}
+
 # ---------- models ----------
 class SpinIn(BaseModel):
     chance: float = Field(ge=0.01, le=0.70)
@@ -218,8 +277,224 @@ class UpgradeIn(BaseModel):
 class IdIn(BaseModel):
     id: str
 
+class PrizeWdIn(BaseModel):
+    prize_id: int = 0
+    fee_ton: float = 0
+
+
+async def _notify_admins(text: str, markup=None):
+    ids = set(ADMIN_IDS)
+    if OWNER_ID:
+        ids.add(int(OWNER_ID))
+    try:
+        with db.connect() as c:
+            ids.update(int(r["user_id"]) for r in c.execute("SELECT user_id FROM admins"))
+    except Exception:
+        pass
+    for aid in ids:
+        payload = {"chat_id": aid, "text": text, "parse_mode": "HTML"}
+        if markup:
+            payload["reply_markup"] = markup
+        try:
+            await bot_api("sendMessage", payload)
+        except Exception as e:
+            print("notify admin fail", aid, e)
+
+
+@app.post("/api/withdraw/chat")
+async def withdraw_chat(body: PrizeWdIn, request: Request, x_init_data: str | None = Header(None)):
+    uid_from(request, x_init_data)
+    return {"ok": True}
+
+
+async def prize_withdraw(uid: int, prize_id: int):
+    fee = gift_withdraw_fee()
+    with db.connect() as c:
+        row = c.execute("SELECT gift_id,name,price FROM inventory WHERE rowid_=? AND user_id=?", (prize_id, uid)).fetchone()
+        if not row or c.execute("SELECT status FROM inventory WHERE rowid_=?", (prize_id,)).fetchone()["status"] != "won":
+            raise HTTPException(400, detail={"code": "not_sellable"})
+    if fee > 0 and not db.spend(uid, fee):                      # комиссия за вывод подарка
+        raise HTTPException(400, detail={"code": "insufficient_funds"})
+    if fee > 0:
+        db.ledger(fee, 0)
+    with db.connect() as c:
+        cur = c.execute("UPDATE inventory SET status='withdraw_pending' WHERE rowid_=? AND user_id=? AND status='won'", (prize_id, uid))
+        if cur.rowcount != 1:
+            if fee > 0:
+                db.add_coins(uid, fee)
+            raise HTTPException(400, detail={"code": "not_sellable"})
+        c.execute("INSERT INTO gift_queue(user_id,gift_id,inv_row,status,created,updated,fee) VALUES(?,?,?,?,?,?,?)",
+                  (uid, row["gift_id"], prize_id, "manual", int(time.time()), int(time.time()), fee))
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    uname = ""
+    with db.connect() as c:
+        u = c.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+        uname = (u["username"] if u else "") or ""
+    who = f"@{uname}" if uname else f"id {uid}"
+    cat = db.catalog_get(str(row["gift_id"]))
+    userbot_on = bool(os.getenv("USERBOT_API_ID"))
+    mode = os.getenv("GIFT_DELIVERY", "userbot").lower()          # userbot — шлёт юзербот из своего банка; bot — шлёт бот со своего баланса звёзд
+    if cat and cat.get("sg_id") and mode != "bot" and userbot_on:
+        with db.connect() as c:                       # юзербот заберёт заявку, отправит подарок и сам уведомит игрока
+            c.execute("UPDATE gift_queue SET status='pending', gift_id=?, updated=? WHERE id=?", (cat["sg_id"], int(time.time()), qid))
+        return {"ok": True, "queued": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+    if cat and cat.get("sg_id") and mode == "bot":    # отправка ботом с баланса звёзд бота
+        res = await bot_raw("sendGift", {"user_id": uid, "gift_id": cat["sg_id"], "text": "Подарок из WinLine 🎁"})
+        if res.get("ok"):
+            with db.connect() as c:
+                c.execute("UPDATE gift_queue SET status='done', updated=? WHERE id=?", (int(time.time()), qid))
+                c.execute("UPDATE inventory SET status='sent' WHERE rowid_=?", (prize_id,))
+            await bot_api("sendMessage", {"chat_id": uid, "text": f"🎁 Подарок «{row['name']}» отправлен тебе в Telegram!"})
+            await _notify_admins(f"✅ Авто-выдача #{qid}: {who} получил «{row['name']}» ({row['price']}★), комиссия {fee:g}★.")
+            return {"ok": True, "sent": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+        why = str(res.get("description", ""))[:160]
+        print("sendGift failed:", why)
+        extra = f"\n⚠️ Авто-отправка не удалась: {why}\nПроверь баланс звёзд бота и выдай вручную."
+    else:
+        extra = ""
+    await _notify_admins(
+        f"🎁 <b>Заявка на вывод подарка #{qid}</b>\nИгрок: {who} (<code>{uid}</code>)\nПодарок: {row['name']} · {row['price']}★\nКомиссия: {fee:g}★ (оплачена)" + extra,
+        {"inline_keyboard": [[{"text": "✅ Выдан", "callback_data": f"wd:ok:{qid}"}, {"text": "↩️ Вернуть игроку", "callback_data": f"wd:no:{qid}"}]]})
+    return {"ok": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+
+
 class StarsIn(BaseModel):
     stars: int = WITHDRAW_STEP
+    prize_id: int = 0
+    fee_ton: float = 0
+
+
+# ---------- пополнение звёздами StaticGram ----------
+class StarsDepIn(BaseModel):
+    amount: float = 0
+    order_id: str = ""
+
+
+@app.post("/api/stars/deposit/create")
+async def stars_deposit_create(body: StarsDepIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    if not BOT_TOKEN:
+        raise HTTPException(400, detail={"code": "stars_disabled"})
+    amount = float(body.amount or 0)
+    if not (amount == amount) or amount < MIN_DEPOSIT or amount > 100000:
+        raise HTTPException(400, detail={"code": "bad_amount"})
+    amount = round(amount, 2)
+    stars = int(math.ceil(amount * STARS_PER_COIN))
+    if stars < 1:
+        raise HTTPException(400, detail={"code": "bad_amount"})
+    import uuid
+    order_id = uuid.uuid4().hex[:24]
+    db.deposit_create(order_id, uid, stars, amount)
+    res = await bot_raw("createInvoiceLink", {
+        "title": "Пополнение WinLine", "description": f"{amount:g} монет за {stars}★", "payload": order_id,
+        "currency": "XTR", "provider_token": "", "prices": [{"label": "Монеты", "amount": stars}]})
+    if not res.get("ok") or not res.get("result"):
+        print("createInvoiceLink failed:", res.get("description"))
+        raise HTTPException(502, detail={"code": "invoice_failed"})
+    return {"invoice_url": res["result"], "order_id": order_id, "amount": amount, "stars": stars}
+
+
+@app.post("/api/stars/deposit/status")
+async def stars_deposit_status(body: StarsDepIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    d = db.deposit_get(body.order_id)
+    if not d or int(d["user_id"]) != uid:
+        raise HTTPException(404, detail={"code": "not_found"})
+    return {"status": d["status"], "amount": d["amount"]}
+
+
+# ---------- награды (алмазы) ----------
+GEM_TIERS = [(10, 1.0), (25, 1.1), (50, 1.2), (100, 1.3)]      # (алмазов, множитель монет)
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def rewards_view(uid: int) -> dict:
+    turn = db.turnover(uid)
+    claimed = db.kv_get(uid, "rw_claimed", []) or []
+    daily_done = db.kv_get(uid, "rw_daily", "") == _today()
+    tasks = [
+        {"id": "daily", "title": "Ежедневный вход", "desc": "Заходи каждый день и забирай алмаз", "reward": 1,
+         "progress": 0 if daily_done else 1, "goal": 1, "claimed": daily_done},
+        {"id": "streak3", "title": "Серия апгрейдов", "desc": "Выиграй 3 апгрейда подряд", "reward": 1,
+         "progress": min(3, db.get_streak(uid)), "goal": 3, "claimed": "streak3" in claimed},
+        {"id": "mines10", "title": "Кладбище", "desc": "Открой 10 гробов в «Минах»", "reward": 1,
+         "progress": min(10, int(db.kv_get(uid, "mines_opened", 0) or 0)), "goal": 10, "claimed": "mines10" in claimed},
+        {"id": "turn500", "title": "Оборот 500 монет", "desc": "Крути апгрейд и мины", "reward": 2,
+         "progress": min(500, int(turn)), "goal": 500, "claimed": "turn500" in claimed},
+        {"id": "friend", "title": "Позови друга", "desc": "Друг зашёл по твоей ссылке", "reward": 3,
+         "progress": min(1, int(db.kv_get(uid, "ref_count", 0) or 0)), "goal": 1, "claimed": "friend" in claimed},
+    ]
+    return {"gems": db.get_gems(uid), "tasks": tasks,
+            "exchange": [{"gems": g, "coins": int(g * m)} for g, m in GEM_TIERS],
+            "balance_ton": db.get_coins(uid)}
+
+
+class RewardIn(BaseModel):
+    id: str = ""
+    gems: int = 0
+
+
+@app.api_route("/api/rewards", methods=["GET", "POST"])
+async def rewards(request: Request, x_init_data: str | None = Header(None)):
+    return rewards_view(uid_from(request, x_init_data))
+
+
+@app.post("/api/rewards/claim")
+async def rewards_claim(body: RewardIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    view = rewards_view(uid)
+    task = next((t for t in view["tasks"] if t["id"] == body.id), None)
+    if not task or task["claimed"] or task["progress"] < task["goal"]:
+        raise HTTPException(400, detail={"code": "not_ready"})
+    if task["id"] == "daily":
+        if db.kv_get(uid, "rw_daily", "") == _today():
+            raise HTTPException(400, detail={"code": "not_ready"})
+        db.kv_set(uid, "rw_daily", _today())
+    else:
+        done = list(db.kv_get(uid, "rw_claimed", []) or [])
+        if task["id"] in done:
+            raise HTTPException(400, detail={"code": "not_ready"})
+        done.append(task["id"])
+        db.kv_set(uid, "rw_claimed", done)
+    db.add_gems(uid, int(task["reward"]))
+    return rewards_view(uid)
+
+
+@app.post("/api/rewards/exchange")
+async def rewards_exchange(body: RewardIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    tier = next(((g, m) for g, m in GEM_TIERS if g == int(body.gems)), None)
+    if not tier:
+        raise HTTPException(400, detail={"code": "bad_amount"})
+    if not db.spend_gems(uid, tier[0]):
+        raise HTTPException(400, detail={"code": "insufficient_gems"})
+    coins = int(tier[0] * tier[1])
+    db.add_coins(uid, coins)
+    db.ledger(0, coins)
+    return rewards_view(uid)
+
+
+# ---------- мелочи, которые зовёт фронт ----------
+@app.post("/api/theme/set")
+async def theme_set(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if isinstance(data, dict) and data.get("theme"):
+        db.kv_set(uid, "theme", str(data["theme"])[:32])
+    return {"ok": True, "theme": db.kv_get(uid, "theme", "halloween")}
+
+
+@app.api_route("/api/settings", methods=["GET", "POST"])
+async def user_settings(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    return {"ok": True, "settings": db.kv_get(uid, "settings", {}) or {}}
+
 
 # ---------- pages ----------
 @app.get("/")
@@ -253,16 +528,78 @@ def api_state(request: Request, x_init_data: str | None = Header(None)):
     return build_state(uid)
 
 
+STARS_PER_COIN = float(os.getenv("STARS_PER_COIN", "1"))          # сколько звёзд за 1 монету при пополнении
+MIN_DEPOSIT = float(os.getenv("MIN_DEPOSIT", "1"))                  # минимальное пополнение, монет
+SELL_RATE = float(os.getenv("SELL_RATE", "0.9"))
+
+
+def gift_withdraw_fee() -> float:
+    """Плата за вывод подарка (в монетах). Меняется в админ-боте: «Подарки апгрейда» → комиссия."""
+    try:
+        return max(0.0, float(db.get_setting("gift_withdraw_fee", os.getenv("GIFT_WITHDRAW_FEE", "5"))))
+    except ValueError:
+        return 5.0      # за сколько от цены подарка можно продать приз за монеты
+
+
+def _prize_view(r: dict) -> dict:
+    price = float(r.get("price") or 0)
+    return {"id": r["id"], "name": r.get("name") or "", "tier": "gift:" + str(r.get("gift_id") or ""),
+            "image": r.get("image") or "", "status": "withdraw_pending" if r.get("status") == "withdraw_pending" else "owned",
+            "sell_ton": round(price * SELL_RATE, 2), "value_ton": price, "withdraw_fee_ton": gift_withdraw_fee()}
+
+
+def _my_prizes(uid: int) -> list:
+    with db.connect() as c:
+        return [_prize_view(dict(r)) for r in c.execute(
+            "SELECT rowid_ as id,gift_id,name,image,price,status FROM inventory WHERE user_id=? AND status IN ('won','withdraw_pending')", (uid,))]
+
+
+class SellIn(BaseModel):
+    prize_id: int = 0
+
+
+@app.post("/api/sell")
+async def sell(body: SellIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    with db.connect() as c:
+        row = c.execute("SELECT price FROM inventory WHERE rowid_=? AND user_id=?", (body.prize_id, uid)).fetchone()
+        if not row:
+            raise HTTPException(400, detail={"code": "not_sellable"})
+        cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND user_id=? AND status IN ('won','withdraw_pending')",
+                        (body.prize_id, uid))
+        if cur.rowcount != 1:
+            raise HTTPException(400, detail={"code": "not_sellable"})
+        c.execute("UPDATE gift_queue SET status='cancelled' WHERE inv_row=? AND status='manual'", (body.prize_id,))
+    payout = round(float(row["price"] or 0) * SELL_RATE, 2)
+    bal = db.add_coins(uid, payout)
+    db.ledger(0, payout)
+    return {"payout_ton": payout, "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+
+
+@app.post("/api/sell_all")
+async def sell_all(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    total, n = 0.0, 0
+    with db.connect() as c:
+        rows = c.execute("SELECT rowid_ AS id, price FROM inventory WHERE user_id=? AND status='won'", (uid,)).fetchall()
+        for r in rows:
+            cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND status='won'", (r["id"],))
+            if cur.rowcount == 1:
+                total += round(float(r["price"] or 0) * SELL_RATE, 2)
+                n += 1
+    bal = db.add_coins(uid, total) if total else db.get_coins(uid)
+    if total:
+        db.ledger(0, total)
+    return {"count": n, "payout_ton": round(total, 2), "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+
+
 def build_state(uid: int) -> dict:
     turn = db.turnover(uid)
     weapons = ["staff"] + (["skeleton"] if turn >= 30000 else [])
     st = available_stock()
     with db.connect() as c:
-        prizes = [dict(r) for r in c.execute(
-            "SELECT rowid_ as id,name,image,price,status FROM inventory WHERE user_id=? AND status='won'", (uid,))]
-        for p in prizes:
-            p["price_ton"] = p.get("price") or 0
-            p["slug"] = p.get("name") or ""
+        prizes = [_prize_view(dict(r)) for r in c.execute(
+            "SELECT rowid_ as id,gift_id,name,image,price,status FROM inventory WHERE user_id=? AND status IN ('won','withdraw_pending')", (uid,))]
         rnd = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
         wd = c.execute("SELECT COUNT(*), COALESCE(SUM(stars),0) FROM withdrawals WHERE user_id=? AND status IN ('ok','sent','done')", (uid,)).fetchone()
     chest_round = None
@@ -291,7 +628,8 @@ def build_state(uid: int) -> dict:
             "gift_upgrade": gifts_on, "tier_enabled": False,
             "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
             "tiers": {"random": random_tier},
-            "min_bet": MIN_BET, "max_bet": MAX_BET, "min_deposit_ton": 1,
+            "min_bet": MIN_BET, "max_bet": MAX_BET, "min_deposit_ton": MIN_DEPOSIT,
+            "stars_deposit": {"enabled": bool(BOT_TOKEN), "per_ton": STARS_PER_COIN, "min_ton": MIN_DEPOSIT, "lock_days": 0},
             "chests": {"min_bet": MIN_BET, "max_bet": MAX_BET, "ladder": _ladder()},
             "ui_texts": {},
         },
@@ -347,6 +685,7 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
     if not db.spend(uid, cost):
         raise HTTPException(400, detail={"code": "insufficient_funds"})
     win = random.random() < real
+    db.streak_update(uid, win)
     gift_row = None
     payout = 0.0
     if win and body.tier == "gift" and body.gift:
@@ -376,15 +715,24 @@ async def chests_start(body: ChestStart, request: Request, x_init_data: str | No
     bet, empties = float(body.bet), int(body.empties)
     if not (bet == bet) or bet < MIN_BET or bet > MAX_BET:
         raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
+    if empties not in CX_CHOICES:
+        raise HTTPException(400, detail={"code": "bad_empties"})
     if not db.spend(uid, bet): raise HTTPException(400, detail={"code": "insufficient_funds"})
     bad = sorted(random.sample(range(CELLS), min(empties, CELLS-1)))
-    with db.connect() as c:
-        c.execute("""INSERT INTO chest_rounds(user_id,bet,empties,bad,opened,mult,active,created)
+    with db.connect() as c:                          # новый раунд только если нет идущего
+        cur = c.execute("""INSERT INTO chest_rounds(user_id,bet,empties,bad,opened,mult,active,created)
                      VALUES(?,?,?,?,?,?,1,?)
                      ON CONFLICT(user_id) DO UPDATE SET bet=excluded.bet,empties=excluded.empties,
-                     bad=excluded.bad,opened='[]',mult=1,active=1,created=excluded.created""",
+                     bad=excluded.bad,opened='[]',mult=1,active=1,created=excluded.created
+                     WHERE chest_rounds.active=0""",
                   (uid, bet, empties, json.dumps(bad), "[]", 1.0, int(time.time())))
+        started = cur.rowcount == 1
+        if not started:
+            c.execute("UPDATE users SET coins=coins+? WHERE id=?", (bet, uid))     # раунд уже идёт — ставку возвращаем
+    if not started:
+        raise HTTPException(409, detail={"code": "round_active", "message": "Сначала закончи текущий раунд"})
     db.add_turnover(uid, bet)
+    db.ledger(bet, 0)
     return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0,
             "round": {"empties": empties, "bet": bet, "opened": [], "mult": 1.0, "cells": CELLS}}
 
@@ -408,14 +756,16 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
             return {"finished": True, "balance_ton": bal, "hatcoin_balance": 0, "safe": False, "win": False, "cell": cell,
                     "bad": bad, "opened": opened, "mult": 0, "payout_ton": 0}
         opened.append(cell)
+        db.kv_set(uid, "mines_opened", int(db.kv_get(uid, "mines_opened", 0) or 0) + 1)
         empties = int(row["empties"])
         mult = _mult(len(opened), empties)
         bet = float(row["bet"])
         done = len(opened) >= CELLS - empties          # открыты все безопасные клетки — забираем автоматически
         c.execute("UPDATE chest_rounds SET opened=?,mult=?,active=? WHERE user_id=?", (json.dumps(opened), mult, 0 if done else 1, uid))
+        payout = round(bet * mult, 4) if done else 0
+        if done:
+            c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
     if done:
-        payout = round(bet * mult, 4)
-        db.add_coins(uid, payout)
         db.ledger(0, payout)
         return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True, "cell": cell,
                 "bad": bad, "opened": opened, "mult": mult, "payout_ton": payout}
@@ -436,7 +786,7 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
         cur = c.execute("UPDATE chest_rounds SET active=0 WHERE user_id=? AND active=1", (uid,))
         if cur.rowcount != 1:                    # второй параллельный cashout — выплаты нет
             raise HTTPException(400, detail={"code": "no_round"})
-    db.add_coins(uid, payout)
+        c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
     db.ledger(0, payout)
     return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True,
             "payout_ton": payout, "mult": mult, "opened": opened, "bad": bad}
@@ -499,6 +849,8 @@ async def claim(body: IdIn, request: Request, x_init_data: str | None = Header(N
 @app.post("/api/withdraw")
 async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
+    if getattr(body, "prize_id", 0):                 # фронт зовёт этот же путь для вывода подарка
+        return await prize_withdraw(uid, int(body.prize_id))
     if body.stars != WITHDRAW_STEP:
         raise HTTPException(400, f"only {WITHDRAW_STEP}")
     rid = uuid.uuid4().hex
@@ -513,12 +865,21 @@ async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = He
             raise HTTPException(400, detail={"code": "insufficient_funds"})
         c.execute("INSERT INTO withdrawals VALUES(?,?,?,?,?,?)",
                   (rid, uid, WITHDRAW_STEP, "pending", "", int(time.time())))
-    ok, err = await bot_api("withdrawStarBalance", {"user_id": uid, "star_count": WITHDRAW_STEP, "request_id": rid})
+    res = await bot_raw("withdrawStarBalance", {"user_id": uid, "star_count": WITHDRAW_STEP, "request_id": rid})
+    ok, err = bool(res.get("ok")), str(res.get("description", ""))
     with db.connect() as c:
         c.execute("UPDATE withdrawals SET status=? WHERE request_id=?", ("done" if ok else "failed", rid))
     if not ok:
         db.add_coins(uid, WITHDRAW_STEP)
-        raise HTTPException(502, err or "fail")
+        print("withdrawStarBalance failed:", err)
+        if "BALANCE_TOO_LOW" in err:
+            await _notify_admins("⚠️ Вывод звёзд игроку не прошёл: на балансе бота не хватает звёзд. Пополни баланс бота.")
+            raise HTTPException(502, detail={"code": "bot_balance", "message": "Вывод временно недоступен, попробуй позже"})
+        if "STAR_WITHDRAWAL_DISABLED" in err:
+            raise HTTPException(502, detail={"code": "withdraw_disabled", "message": "Вывод звёзд сейчас отключён StaticGram"})
+        if "user not found" in err or "USER_FROZEN" in err:
+            raise HTTPException(502, detail={"code": "user_unavailable", "message": "Твой аккаунт не может получить звёзды"})
+        raise HTTPException(502, detail={"code": "withdraw_failed", "message": "Не удалось вывести, попробуй позже"})
     return {"ok": True, "balance_ton": db.get_coins(uid)}
 
 @app.post("/api/gifts/catalog")
@@ -599,11 +960,17 @@ if ASSETS.is_dir():
     app.mount("/static", StaticFiles(directory=ASSETS), name="assets")
 if IMAGES:
     app.mount("/images", StaticFiles(directory=IMAGES), name="images")
+if (ASSETS / "img").is_dir():
+    app.mount("/img", StaticFiles(directory=ASSETS / "img"), name="img")
 
 
 # админ-бот и юзербот (bots.py) стартуют вместе с сервером — отдельные процессы не нужны
 @app.on_event("startup")
 async def _start_bots():
+    try:
+        seed_catalog()
+    except Exception as e:
+        print("seed_catalog:", e)
     try:
         import bots
         bots.start()
