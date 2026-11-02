@@ -41,6 +41,16 @@ def init():
               user_id INTEGER PRIMARY KEY, bet REAL, empties INTEGER, bad TEXT, opened TEXT, mult REAL, active INTEGER, created INTEGER);
             CREATE TABLE IF NOT EXISTS user_stats(user_id INTEGER PRIMARY KEY, turnover_ton REAL NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS casino_day(day TEXT PRIMARY KEY, intake REAL DEFAULT 0, payout REAL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS upgrade_gifts(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE, name TEXT, image TEXT DEFAULT '',
+              price REAL NOT NULL DEFAULT 10, enabled INTEGER NOT NULL DEFAULT 1, relayer_id TEXT DEFAULT '',
+              sort INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS deposits(
+              order_id TEXT PRIMARY KEY, user_id INTEGER, stars INTEGER, amount REAL,
+              status TEXT DEFAULT 'pending', charge_id TEXT DEFAULT '', created INTEGER);
+            CREATE TABLE IF NOT EXISTS catalog_gifts(
+              slug TEXT PRIMARY KEY, name TEXT, image TEXT, price REAL NOT NULL DEFAULT 20,
+              enabled INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS user_kv(user_id INTEGER, k TEXT, v TEXT, PRIMARY KEY(user_id,k));
             CREATE TABLE IF NOT EXISTS spin_log(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chance REAL, cost REAL, win INTEGER, created INTEGER);
@@ -55,6 +65,13 @@ def _migrate():
                          ("upgrade_win_streak", "INTEGER DEFAULT 0"), ("upgrade_lose_streak", "INTEGER DEFAULT 0")]:
             if col not in have:
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
+        _col(c, "gift_queue", "fee", "REAL DEFAULT 0")
+        _col(c, "catalog_gifts", "sg_id", "TEXT DEFAULT ''")
+
+def _col(c, table, col, typ):
+    have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+    if col not in have:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
 def spend(uid, amount):
     """Атомарно списать монеты. True, если хватило. Защита от двойной траты и отрицательных сумм."""
@@ -155,3 +172,107 @@ def count_games(uid):
     with connect() as c:
         n = c.execute("SELECT COUNT(*) FROM spin_log WHERE user_id=?", (uid,)).fetchone()[0]
     return int(n or 0)
+
+
+# ---------- каталог подарков апгрейда (админ включает/выключает и меняет цену) ----------
+def catalog_seed(items):
+    """items: [(slug, name, image, price)] — добавляет только новые, существующие (цены/вкл) не трогает."""
+    with connect() as c:
+        n = c.execute("SELECT COALESCE(MAX(sort),0) FROM catalog_gifts").fetchone()[0]
+        for slug, name, image, price in items:
+            cur = c.execute("INSERT OR IGNORE INTO catalog_gifts(slug,name,image,price,enabled,sort) VALUES(?,?,?,?,1,?)",
+                            (slug, name, image, float(price), n + 1))
+            if cur.rowcount:
+                n += 1
+
+def catalog_list(enabled_only=False):
+    q = "SELECT slug,name,image,price,enabled,COALESCE(sg_id,'') AS sg_id FROM catalog_gifts"
+    if enabled_only:
+        q += " WHERE enabled=1"
+    q += " ORDER BY sort,slug"
+    with connect() as c:
+        return [dict(r) for r in c.execute(q)]
+
+def catalog_get(slug):
+    with connect() as c:
+        r = c.execute("SELECT slug,name,image,price,enabled,COALESCE(sg_id,'') AS sg_id FROM catalog_gifts WHERE slug=?", (slug,)).fetchone()
+    return dict(r) if r else None
+
+def catalog_set(slug, enabled=None, price=None, name=None):
+    with connect() as c:
+        if enabled is not None:
+            c.execute("UPDATE catalog_gifts SET enabled=? WHERE slug=?", (1 if enabled else 0, slug))
+        if price is not None:
+            c.execute("UPDATE catalog_gifts SET price=? WHERE slug=?", (float(price), slug))
+        if name is not None:
+            c.execute("UPDATE catalog_gifts SET name=? WHERE slug=?", (name, slug))
+
+
+# ---------- пополнение звёздами ----------
+def deposit_create(order_id, uid, stars, amount):
+    import time as _t
+    with connect() as c:
+        c.execute("INSERT INTO deposits(order_id,user_id,stars,amount,status,created) VALUES(?,?,?,?,'pending',?)",
+                  (order_id, uid, int(stars), float(amount), int(_t.time())))
+
+def deposit_get(order_id):
+    with connect() as c:
+        r = c.execute("SELECT * FROM deposits WHERE order_id=?", (order_id,)).fetchone()
+    return dict(r) if r else None
+
+def deposit_credit(order_id, stars, charge_id=""):
+    """Зачислить монеты ровно один раз. Возвращает (user_id, amount) или None, если уже зачислено/не найдено/сумма не сошлась."""
+    with connect() as c:
+        r = c.execute("SELECT user_id,amount,stars FROM deposits WHERE order_id=?", (order_id,)).fetchone()
+        if not r or int(r["stars"]) != int(stars):
+            return None
+        cur = c.execute("UPDATE deposits SET status='credited', charge_id=? WHERE order_id=? AND status='pending'", (charge_id, order_id))
+        if cur.rowcount != 1:
+            return None
+        uid, amount = int(r["user_id"]), float(r["amount"])
+    add_coins(uid, amount)
+    ledger(float(amount), 0)
+    return uid, amount
+
+# ---------- алмазы ----------
+def get_gems(uid):
+    ensure_user(uid)
+    with connect() as c:
+        return int(c.execute("SELECT gems FROM users WHERE id=?", (uid,)).fetchone()["gems"] or 0)
+
+def add_gems(uid, delta):
+    ensure_user(uid)
+    with connect() as c:
+        c.execute("UPDATE users SET gems=gems+? WHERE id=?", (int(delta), uid))
+        return int(c.execute("SELECT gems FROM users WHERE id=?", (uid,)).fetchone()["gems"] or 0)
+
+def spend_gems(uid, n):
+    n = int(n)
+    if n <= 0:
+        return False
+    ensure_user(uid)
+    with connect() as c:
+        return c.execute("UPDATE users SET gems=gems-? WHERE id=? AND gems>=?", (n, uid, n)).rowcount == 1
+
+
+def streak_update(uid, win):
+    ensure_user(uid)
+    with connect() as c:
+        if win:
+            c.execute("UPDATE users SET upgrade_win_streak=COALESCE(upgrade_win_streak,0)+1, upgrade_lose_streak=0 WHERE id=?", (uid,))
+        else:
+            c.execute("UPDATE users SET upgrade_win_streak=0, upgrade_lose_streak=COALESCE(upgrade_lose_streak,0)+1 WHERE id=?", (uid,))
+
+def get_streak(uid):
+    ensure_user(uid)
+    with connect() as c:
+        r = c.execute("SELECT upgrade_win_streak FROM users WHERE id=?", (uid,)).fetchone()
+    return int(r["upgrade_win_streak"] or 0)
+
+
+def catalog_add(slug, name, image, price, sg_id="", enabled=1):
+    """Добавить/обновить подарок. sg_id — настоящий gift_id StaticGram (для автоотправки через sendGift)."""
+    with connect() as c:
+        n = c.execute("SELECT COALESCE(MAX(sort),0) FROM catalog_gifts").fetchone()[0]
+        c.execute("INSERT OR IGNORE INTO catalog_gifts(slug,name,image,price,enabled,sort,sg_id) VALUES(?,?,?,?,?,?,?)",
+                  (slug, name, image, float(price), 1 if enabled else 0, n + 1, sg_id or ""))
