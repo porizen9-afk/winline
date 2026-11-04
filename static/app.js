@@ -168,7 +168,8 @@ try{
  }
  async function firstVisit(){
   if(decided)return;
-  await new Promise(resolve=>setTimeout(resolve,550));
+  await new Promise(resolve=>{const ready=()=>document.body&&document.body.classList.contains('booted');if(ready())return resolve();const mo=new MutationObserver(()=>{if(ready()){mo.disconnect();resolve()}});mo.observe(document.body,{attributes:true,attributeFilter:['class']});setTimeout(resolve,25000)});
+  await new Promise(resolve=>setTimeout(resolve,300));
   const frameTime=await sampleFrames();
   if(decided)return;
   if(document.hidden){document.addEventListener('visibilitychange',()=>{if(!document.hidden)firstVisit()},{once:true});return}
@@ -1358,7 +1359,7 @@ try{
   const $ = (s, r = document) => r.querySelector(s);
   const fmt = (n) => (+n % 1 ? (+n).toFixed(2) : String(+n));
   const WITHDRAW_STEP = 25;
-  const GEM = 'images/gram-px.png', COIN = 'images/hatcoin.png';
+  const GEM = 'images/gram-px.png', COIN = 'images/star-px.png';
   const DEMO = {
     gems: 12,
     tasks: [
@@ -1391,6 +1392,9 @@ try{
       const plus = bc.querySelector('.bal-plus'); if (plus) cc.appendChild(plus);
       document.documentElement.setAttribute('data-econ', '1');
     }
+    const ci = cc.querySelector('img'), gi = bc.querySelector('img');
+    if (ci && !ci.src.includes('star-px')) ci.src = '/' + COIN;
+    if (gi && !gi.src.includes('gram-px')) gi.src = '/' + GEM;
     $('#coinMine').textContent = coins().toFixed(2);
     if (data) $('#gemMine').textContent = String(data.gems);
   }
@@ -1455,30 +1459,46 @@ try{
   /* ---------- вывод ЗВЁЗД в профиле ---------- */
   function wdCard() {
     const anchor = $('#view-profile .pstats'); if (!anchor) return;
-    const bal = coins(), ok = bal >= WITHDRAW_STEP, key = bal + '|' + ok;
+    const L = (data && data.withdraw) || { min: WITHDRAW_STEP, max: 75000, daily: 75000 };
+    const bal = coins(), key = bal + '|' + L.min + '|' + L.max;
     const old = $('#wdCard'); if (old && old.dataset.k === key) return; if (old) old.remove();
-    const left = Math.max(0, WITHDRAW_STEP - bal), card = document.createElement('div');
+    const card = document.createElement('div');
     card.className = 'wd-card'; card.id = 'wdCard'; card.dataset.k = key;
+    const cap = Math.max(0, Math.floor(Math.min(bal, L.max)));
     card.innerHTML = `<h3>ВЫВОД ЗВЁЗД</h3>
-      <div class="wd-bal"><img src="${COIN}" alt=""><b>${fmt(bal)}</b><span>монет</span><em>1 монета = 1 ★</em></div>
-      <div class="wd-bar"><i style="width:${Math.min(100, bal / WITHDRAW_STEP * 100)}%"></i></div>
-      <p>${ok ? `Можно вывести ровно ${WITHDRAW_STEP} ★ за раз. Спишется ${WITHDRAW_STEP} монет.` : `Нужно ещё ${fmt(left)} монет до вывода. Вывод — ровно ${WITHDRAW_STEP} ★ за раз.`}</p>
-      <button class="wd-btn" type="button" ${ok ? '' : 'disabled'}>ВЫВЕСТИ ${WITHDRAW_STEP} ★</button>
+      <div class="wd-bal"><img src="${COIN}" alt=""><b>${fmt(bal)}</b><span>★</span><em>1 монета = 1 ★, без комиссии</em></div>
+      <div class="wd-amt"><input id="wdAmt" type="number" inputmode="numeric" min="${L.min}" max="${L.max}" step="1" value="${Math.min(Math.max(L.min, cap), L.max)}" aria-label="Сумма вывода"><button type="button" id="wdMax">МАКС</button></div>
+      <p id="wdHint"></p>
+      <button class="wd-btn" type="button" disabled>ВЫВЕСТИ</button>
       <div class="wd-mini"><button type="button" id="wdInv">🎁 ИНВЕНТАРЬ</button><button type="button" id="wdRw">💎 НАГРАДЫ</button></div>`;
-    $('.wd-btn', card).onclick = async (ev) => {
-      const btn = ev.currentTarget; btn.disabled = true;
+    const inp = $('#wdAmt', card), btn = $('.wd-btn', card), hint = $('#wdHint', card);
+    const amount = () => Math.floor(Number(inp.value) || 0);
+    const sync = () => {
+      const a = amount();
+      let msg = '', ok = false;
+      if (bal < L.min) msg = `Нужно ещё ${fmt(L.min - bal)} ★ до вывода (минимум ${fmt(L.min)} ★ за раз).`;
+      else if (a < L.min) msg = `Минимум за один вывод — ${fmt(L.min)} ★.`;
+      else if (a > L.max) msg = `Максимум за один вывод — ${fmt(L.max)} ★.`;
+      else if (a > bal) msg = 'У тебя столько нет.';
+      else { ok = true; msg = `Спишется ${fmt(a)} монет. Лимит в сутки — ${fmt(L.daily)} ★.`; }
+      hint.textContent = msg; btn.disabled = !ok; btn.textContent = ok ? `ВЫВЕСТИ ${fmt(a)} ★` : 'ВЫВЕСТИ';
+    };
+    inp.addEventListener('input', sync); $('#wdMax', card).onclick = () => { inp.value = cap; sync(); };
+    btn.onclick = async () => {
+      const a = amount(); btn.disabled = true;
       try {
-        await api('/api/withdraw', { stars: WITHDRAW_STEP });
-        if (window.toast) window.toast('Заявка на вывод ' + WITHDRAW_STEP + ' ★ отправлена');
+        await api('/api/withdraw', { stars: a });
+        if (window.toast) window.toast('Заявка на вывод ' + fmt(a) + ' ★ отправлена');
       } catch (e) {
-        const known = { insufficient_funds: 'Недостаточно монет', cap: 'Дневной лимит вывода исчерпан' };
-        if (window.toast) window.toast(known[e && e.code] || (e && e.message) || 'Не удалось вывести', true);
+        const known = { insufficient_funds: 'Недостаточно монет' };
+        if (window.toast) window.toast(known[e && e.code] || (e && e.data && e.data.message) || (e && e.message) || 'Не удалось вывести', true, 5000);
       }
       if (window.refreshState) window.refreshState();
-      btn.disabled = false;
+      load().then(() => { header(); wdCard(); });
     };
     $('#wdInv', card).onclick = () => window.RelayerInventory && window.RelayerInventory.open();
     $('#wdRw', card).onclick = openRewards;
+    sync();
     anchor.after(card);
   }
 
@@ -1505,18 +1525,18 @@ try{
 
 /* ===== maintenance-gate.js ===== */
 try{
-/* Техперерыв: полноэкранная картинка /static/maintenance-screen.png.
-   Показывается только если сервер сказал blocked=true (владелец и админы проходят). */
 (async function () {
   try {
     const init = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) || "";
     const r = await fetch("/api/maintenance", { cache: "no-store", headers: { "X-Init-Data": init } });
     const j = await r.json();
     if (!j.maintenance || !j.blocked) return;
-    const ov = document.createElement("div");
-    ov.id = "maintOverlay";
-    ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:#0a0a12 center/cover no-repeat;background-image:url('/static/maintenance-screen.png');";
-    document.body.appendChild(ov);
+    const el = document.getElementById("mtScreen"); if (!el) return;
+    const t = document.getElementById("mtText");
+    if (t) t.textContent = j.text || "Сервис на технических работах. Скоро вернёмся.";
+    el.hidden = false;
+    const retry = document.getElementById("mtRetry"); if (retry) retry.onclick = () => location.reload();
+    setTimeout(() => location.reload(), 30000);
   } catch (_) {}
 })();
 }catch(e){console.error("[app.js] maintenance-gate.js",e)}
