@@ -48,6 +48,8 @@ def init():
             CREATE TABLE IF NOT EXISTS deposits(
               order_id TEXT PRIMARY KEY, user_id INTEGER, stars INTEGER, amount REAL,
               status TEXT DEFAULT 'pending', charge_id TEXT DEFAULT '', created INTEGER);
+            CREATE TABLE IF NOT EXISTS referrals(user_id INTEGER PRIMARY KEY, referrer_id INTEGER NOT NULL, created INTEGER);
+            CREATE TABLE IF NOT EXISTS ref_codes(code TEXT PRIMARY KEY COLLATE NOCASE, user_id INTEGER UNIQUE);
             CREATE TABLE IF NOT EXISTS catalog_gifts(
               slug TEXT PRIMARY KEY, name TEXT, image TEXT, price REAL NOT NULL DEFAULT 20,
               enabled INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0);
@@ -232,6 +234,10 @@ def deposit_credit(order_id, stars, charge_id=""):
         uid, amount = int(r["user_id"]), float(r["amount"])
     add_coins(uid, amount)
     ledger(float(amount), 0)
+    try:
+        ref_reward(uid, float(amount))
+    except Exception as e:
+        print("ref_reward error", e)
     return uid, amount
 
 # ---------- алмазы ----------
@@ -276,3 +282,93 @@ def catalog_add(slug, name, image, price, sg_id="", enabled=1):
         n = c.execute("SELECT COALESCE(MAX(sort),0) FROM catalog_gifts").fetchone()[0]
         c.execute("INSERT OR IGNORE INTO catalog_gifts(slug,name,image,price,enabled,sort,sg_id) VALUES(?,?,?,?,?,?,?)",
                   (slug, name, image, float(price), 1 if enabled else 0, n + 1, sg_id or ""))
+
+
+# ---------- лимиты и настройки, которые админ меняет в боте ----------
+import os as _os
+LIMITS = {   # ключ: (название, переменная окружения по умолчанию, значение по умолчанию)
+    "withdraw_min":    ("Мин. вывод звёзд за раз, ★",              "WITHDRAW_MIN",        "25"),
+    "withdraw_max":    ("Макс. вывод звёзд за раз, ★",             "WITHDRAW_MAX",        "75000"),
+    "withdraw_daily":  ("Лимит вывода на игрока в сутки, ★",       "DAILY_WITHDRAW_CAP",  "75000"),
+    "bet_min":         ("Мин. ставка, ★",                          "MIN_BET",             "0.1"),
+    "bet_max":         ("Макс. ставка, ★",                         "MAX_BET",             "50000"),
+    "deposit_min":     ("Мин. пополнение, ★",                      "MIN_DEPOSIT",         "1"),
+    "deposit_max":     ("Макс. пополнение за раз, ★",              "MAX_DEPOSIT",         "100000"),
+    "gift_withdraw_fee": ("Комиссия за вывод подарка, ★",          "GIFT_WITHDRAW_FEE",   "5"),
+    "mines_max_mult":  ("Потолок множителя в минах, x",            "MINES_MAX_MULT",      "1000"),
+    "level_base":      ("Сложность уровней: оборот до 2 ур., ★",   "LEVEL_BASE",          "500"),
+    "ref_percent":     ("Реферальный % с пополнений друга",        "REF_PERCENT",         "5"),
+}
+
+def limit(key):
+    label, env, default = LIMITS[key]
+    raw = get_setting(key, "")
+    try:
+        return float(raw) if raw != "" else float(_os.getenv(env) or default)
+    except ValueError:
+        return float(default)
+
+def set_limit(key, value):
+    if key not in LIMITS:
+        raise KeyError(key)
+    set_setting(key, f"{float(value):g}")
+
+def kv_add(uid, key, delta):
+    cur = float(kv_get(uid, key, 0) or 0)
+    kv_set(uid, key, round(cur + float(delta), 4))
+    return cur + float(delta)
+
+# ---------- рефералы ----------
+def ref_attach(uid, referrer):
+    """Привязать игрока к тому, кто его позвал. Один раз, не себя, только к существующему игроку."""
+    try:
+        referrer = int(referrer)
+    except (TypeError, ValueError):
+        return False
+    if referrer == int(uid):
+        return False
+    with connect() as c:
+        if not c.execute("SELECT 1 FROM users WHERE id=?", (referrer,)).fetchone():
+            return False
+        cur = c.execute("INSERT OR IGNORE INTO referrals(user_id,referrer_id,created) VALUES(?,?,?)",
+                        (int(uid), referrer, int(time.time())))
+        return cur.rowcount == 1
+
+def ref_of(uid):
+    with connect() as c:
+        r = c.execute("SELECT referrer_id FROM referrals WHERE user_id=?", (int(uid),)).fetchone()
+    return int(r["referrer_id"]) if r else None
+
+def ref_count(referrer):
+    with connect() as c:
+        return int(c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=?", (int(referrer),)).fetchone()[0])
+
+def ref_reward(depositor, amount):
+    ref = ref_of(depositor)
+    if not ref:
+        return 0.0
+    bonus = round(float(amount) * limit("ref_percent") / 100.0, 2)
+    if bonus > 0:
+        kv_add(ref, "ref_balance", bonus)
+        kv_add(ref, "ref_earned", bonus)
+    return bonus
+
+def code_of(uid):
+    with connect() as c:
+        r = c.execute("SELECT code FROM ref_codes WHERE user_id=?", (int(uid),)).fetchone()
+    return r["code"] if r else ""
+
+def code_owner(code):
+    with connect() as c:
+        r = c.execute("SELECT user_id FROM ref_codes WHERE code=?", (code,)).fetchone()
+    return int(r["user_id"]) if r else None
+
+def code_set(uid, code):
+    """Создать или сменить код игрока. False — код занят другим."""
+    with connect() as c:
+        owner = c.execute("SELECT user_id FROM ref_codes WHERE code=?", (code,)).fetchone()
+        if owner and int(owner["user_id"]) != int(uid):
+            return False
+        c.execute("DELETE FROM ref_codes WHERE user_id=?", (int(uid),))
+        c.execute("INSERT INTO ref_codes(code,user_id) VALUES(?,?)", (code, int(uid)))
+    return True
