@@ -385,104 +385,52 @@ async def lim_callback(uid: int, chat_id: int, mid, data: str):
 
 
 def _prettify_slug(slug: str) -> str:
-    """PlushPepe-1 -> Plush Pepe (номер подарка в название не попадает)."""
     import re as _r
-    base = _r.sub(r"-\d+$", "", slug)
-    return _r.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base).replace("_", " ").replace("-", " ").strip()
-
-
-def _strip_bg(img):
-    """Убирает фон: сначала rembg (если стоит), иначе заливка от краёв по цвету углов. Возвращает RGBA."""
-    img = img.convert("RGBA")
-    if img.getchannel("A").getextrema()[0] < 250:      # уже с прозрачностью — не трогаем
-        return img
-    try:
-        from rembg import remove
-        return remove(img).convert("RGBA")
-    except Exception:
-        pass
-    from PIL import ImageDraw
-    w, h = img.size
-    rgb = img.convert("RGB")
-    mask = Image.new("L", (w, h), 0)
-    for pt in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)):
-        tmp = rgb.copy()
-        ImageDraw.floodfill(tmp, pt, (255, 0, 255), thresh=48)
-        px = tmp.load()
-        m = mask.load()
-        for y in range(h):
-            for x in range(w):
-                if px[x, y] == (255, 0, 255):
-                    m[x, y] = 255
-    alpha = img.getchannel("A")
-    alpha.paste(0, mask=mask)
-    img.putalpha(alpha)
-    return img
+    base, _, num = slug.rpartition("-")
+    if not base:
+        base, num = slug, ""
+    base = _r.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base).replace("_", " ").strip()
+    return f"{base} #{num}" if num.isdigit() else base
 
 
 async def add_gift_from_link(url: str, price: float, name=None):
-    """Подарок по ссылке (t.me/nft/..., staticgram.top/..., прямая картинка). Картинка без фона, название без номера."""
+    """Берёт картинку подарка по ссылке (страница t.me/nft/..., StaticGram или прямая ссылка на картинку) и кладёт в каталог."""
     import re as _r
     from urllib.parse import urljoin, urlparse
     headers = {"User-Agent": "Mozilla/5.0 (compatible; WinLineBot/1.0)"}
-    path = urlparse(url).path.rstrip("/")
-    m_slug = _r.search(r"([A-Za-z][A-Za-z0-9_]*)-\d+(?:\.\w+)?$", path)
-    base_slug = (m_slug.group(1) if m_slug else (path.split("/")[-1] or "gift")).lower()
-    full_slug = (path.split("/")[-1] or base_slug).split(".")[0].lower()
     img_bytes, title = None, None
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as h:
-        async def grab(u):
-            try:
-                r = await h.get(u)
-                if r.is_success and r.content and (r.headers.get("content-type") or "").lower().startswith("image/"):
-                    return r.content
-            except Exception:
-                pass
-            return None
-        # 1) прямая картинка
-        page_html = None
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as h:
             r = await h.get(url)
             ctype = (r.headers.get("content-type") or "").lower()
-            if r.is_success and ctype.startswith("image/"):
+            if not r.is_success:
+                return False, f"ссылка не открывается (HTTP {r.status_code})"
+            if ctype.startswith("image/"):
                 img_bytes = r.content
-            elif r.is_success:
-                page_html = r.text
-        except Exception:
-            pass   # staticgram.top может не отвечать с сервера — это не конец, ниже есть запасные источники
-        # 2) картинка без фона по номеру подарка (если ссылка вида Name-123)
-        if not img_bytes and m_slug:
-            for u in (f"https://nft.fragment.com/gift/{full_slug}.webp",
-                      f"https://nft.fragment.com/gift/{full_slug}.large.jpg"):
-                img_bytes = await grab(u)
-                if img_bytes:
-                    break
-        # 3) og:image со страницы
-        if not img_bytes and page_html:
-            mm = _r.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', page_html, _r.I) or \
-                 _r.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', page_html, _r.I) or \
-                 _r.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)', page_html, _r.I)
-            t = _r.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', page_html, _r.I)
-            title = t.group(1).strip() if t else None
-            if mm:
-                img_bytes = await grab(urljoin(url, mm.group(1).replace("&amp;", "&")))
-    if not img_bytes:
-        return False, "не нашёл картинку по ссылке (страница недоступна или нет og:image)"
-    slug = "lk_" + _r.sub(r"[^a-z0-9]+", "_", base_slug).strip("_")[:24]
+            else:
+                html = r.text
+                m = _r.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, _r.I) or \
+                    _r.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, _r.I) or \
+                    _r.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)', html, _r.I)
+                t = _r.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, _r.I)
+                title = t.group(1).strip() if t else None
+                if not m:
+                    return False, "на странице нет картинки (og:image)"
+                ir = await h.get(urljoin(url, m.group(1).replace("&amp;", "&")))
+                if not ir.is_success or not ir.content:
+                    return False, f"картинка не скачалась (HTTP {ir.status_code})"
+                img_bytes = ir.content
+    except Exception as e:
+        return False, f"ошибка загрузки: {str(e)[:100]}"
+    tail = urlparse(url).path.rstrip("/").split("/")[-1] or "gift"
+    slug = "lk_" + _r.sub(r"[^a-z0-9]+", "_", tail.lower()).strip("_")[:24]
     out_dir = Path(os.getenv("GIFTS_IMG_DIR", "data/gifts"))
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        im = _strip_bg(Image.open(io.BytesIO(img_bytes)))
-        bbox = im.getbbox()
-        if bbox:
-            im = im.crop(bbox)
-        side = max(im.size)
-        sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
-        sq.resize((256, 256)).save(out_dir / f"{slug}.png")
+        Image.open(io.BytesIO(img_bytes)).convert("RGBA").resize((256, 256)).save(out_dir / f"{slug}.png")
     except Exception:
         return False, "по ссылке не картинка, которую можно открыть"
-    gname = _r.sub(r"\s*#\d+\s*$", "", (name or title or _prettify_slug(full_slug))).strip()[:40]
+    gname = (name or title or _prettify_slug(tail))[:40]
     with dbm.connect() as c:
         c.execute("DELETE FROM catalog_gifts WHERE slug=?", (slug,))
     dbm.catalog_add(slug, gname, f"/static/gifts/{slug}.png?v={int(time.time())}", price, enabled=1)
@@ -1073,9 +1021,8 @@ except Exception:          # telethon не установлен — юзербо
     HAVE_TELETHON = False
 try:
     import staticgram  # noqa: F401
-    HAVE_STATICGRAM = True
 except ImportError:
-    HAVE_STATICGRAM = False
+    pass
 
 API_ID = int(os.getenv("USERBOT_API_ID") or os.getenv("API_ID") or "0")
 API_HASH = os.getenv("USERBOT_API_HASH") or os.getenv("API_HASH") or ""
@@ -1308,32 +1255,10 @@ async def on_new_gift_notify(client, gift_title: str, from_id: int | None) -> No
 async def userbot_main():
     if not API_ID or not API_HASH:
         return
-    for _d in (OUT.parent, IMG_DIR):
-        try:
-            _d.mkdir(parents=True, exist_ok=True)
-        except OSError as _e:
-            print("userbot: нет записи в", _d, _e)
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # сессия: строка из USERBOT_STRING_SESSION (не зависит от файлов/томов) или файл data/relayer.session;
-    # если папка только для чтения — копируем файл во временную папку, иначе Telethon не сможет писать в sqlite
-    sess = SESSION
-    sv = os.getenv("USERBOT_STRING_SESSION", "").strip()
-    if sv:
-        from telethon.sessions import StringSession
-        sess = StringSession(sv)
-    else:
-        try:
-            probe = Path(SESSION + ".session").parent / ".wtest"
-            probe.write_text("1"); probe.unlink()
-        except OSError:
-            src = Path(SESSION + ".session")
-            if src.is_file():
-                import shutil, tempfile
-                dst = Path(tempfile.gettempdir()) / "relayer"
-                shutil.copy(src, str(dst) + ".session")
-                sess = str(dst)
-                print("userbot: data/ только для чтения — сессия скопирована во временную папку")
-    client = TelegramClient(sess, API_ID, API_HASH)
+    client = TelegramClient(SESSION, API_ID, API_HASH)
 
     @client.on(events.NewMessage(incoming=True))
     async def _incoming(ev):
@@ -1362,13 +1287,7 @@ async def userbot_main():
             # текстовый фолбэк
             await on_new_gift_notify(client, raw[:80], ev.sender_id)
 
-    # connect() вместо `async with client` (он зовёт start() → input() «Please enter your phone» и вешает весь сервер)
-    await client.connect()
-    try:
-        if not await client.is_user_authorized():
-            print("userbot: сессия data/relayer.session не авторизована — юзербот выключен "
-                  "(залей рабочий .session на постоянный том data/ или пересоздай его локально)")
-            return
+    async with client:
         print("relayer userbot online")
         last_snap = 0.0
         while True:
@@ -1385,8 +1304,6 @@ async def userbot_main():
             except Exception as e:
                 print("queue error:", e)
             await asyncio.sleep(PERIOD)
-    finally:
-        await client.disconnect()
 
 
 
@@ -1395,7 +1312,6 @@ def start():
     """Вызывается из server.py на старте: запускает то, что настроено в окружении."""
     loop = asyncio.get_event_loop()
     async def guard(name, coro_fn):
-        delay = 15
         while True:
             try:
                 await coro_fn()
@@ -1403,9 +1319,8 @@ def start():
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
-                print(f"[{name}] упал: {e!r} — перезапуск через {delay} с")
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 600)       # 15 → 30 → 60 … 600 с: без спама в логах и лишней нагрузки
+                print(f"[{name}] упал: {e!r} — перезапуск через 15 с")
+                await asyncio.sleep(15)
     if BOT_TOKEN:
         loop.create_task(guard("admin_bot", loop_admin))
         if not OWNER_ID:
@@ -1413,9 +1328,6 @@ def start():
     else:
         print("бот выключен: нужен BOT_TOKEN")
     if API_ID and API_HASH and HAVE_TELETHON:
-        if not HAVE_STATICGRAM:
-            print("userbot: пакет staticgram не установлен — Telethon пойдёт в обычный Telegram и получит "
-                  "'Server closed the connection'. Добавь staticgram в requirements.txt (pip install staticgram).")
         loop.create_task(guard("userbot", userbot_main))
     else:
         print("userbot выключен: нужны USERBOT_API_ID, USERBOT_API_HASH и telethon")
