@@ -70,7 +70,11 @@ async def _http_err(request, exc):
         body = {"error": d.get("code") or "error", "message": d.get("message") or d.get("code") or "error", **d}
     else:
         msg = str(d)
-        body = {"error": "maintenance" if (exc.status_code == 503 and msg == "maintenance") else msg, "message": msg}
+        if exc.status_code == 503 and msg == "maintenance":
+            msg = db.get_setting("maintenance_text", "") or "Сервис на технических работах. Скоро вернёмся."
+            body = {"error": "maintenance", "message": msg}
+        else:
+            body = {"error": msg, "message": msg}
     return JSONResponse(body, status_code=exc.status_code)
 
 
@@ -104,7 +108,7 @@ def _mult_at(empties: int, k: int) -> float:
     surv = 1.0
     for i in range(k):
         surv *= (CELLS - empties - i) / (CELLS - i)
-    return min(MINES_MAX_MULT, round(MINES_RTP / surv, 2)) if surv > 0 else 0.0
+    return min(db.limit("mines_max_mult"), round(MINES_RTP / surv, 2)) if surv > 0 else 0.0
 
 
 def _ladder() -> dict:
@@ -155,6 +159,12 @@ def uid_from(request: Request, x_init: str | None = None) -> int:
     except Exception:
         pass
     db.ensure_user(uid, uname)
+    try:                                              # игрок пришёл по реферальной ссылке (startapp=ref123) — запоминаем, если он ещё не играл
+        sp = dict(parse_qsl(raw.strip())).get("start_param") or ""
+        if sp.startswith("ref") and sp[3:].isdigit() and db.ref_of(uid) is None and db.turnover(uid) == 0:
+            db.ref_attach(uid, int(sp[3:]))
+    except Exception as e:
+        print("ref attach error", e)
     with db.connect() as c:
         r = c.execute("SELECT banned FROM users WHERE id=?", (uid,)).fetchone()
         if r and r["banned"]:
@@ -313,6 +323,8 @@ async def prize_withdraw(uid: int, prize_id: int):
         row = c.execute("SELECT gift_id,name,price FROM inventory WHERE rowid_=? AND user_id=?", (prize_id, uid)).fetchone()
         if not row or c.execute("SELECT status FROM inventory WHERE rowid_=?", (prize_id,)).fetchone()["status"] != "won":
             raise HTTPException(400, detail={"code": "not_sellable"})
+        if str(row["gift_id"]) == "hat":
+            raise HTTPException(400, detail={"code": "not_withdrawable", "message": "Шляпу можно только продать"})
     if fee > 0 and not db.spend(uid, fee):                      # комиссия за вывод подарка
         raise HTTPException(400, detail={"code": "insufficient_funds"})
     if fee > 0:
@@ -359,7 +371,7 @@ async def prize_withdraw(uid: int, prize_id: int):
 
 
 class StarsIn(BaseModel):
-    stars: int = WITHDRAW_STEP
+    stars: int = 0
     prize_id: int = 0
     fee_ton: float = 0
 
@@ -376,7 +388,7 @@ async def stars_deposit_create(body: StarsDepIn, request: Request, x_init_data: 
     if not BOT_TOKEN:
         raise HTTPException(400, detail={"code": "stars_disabled"})
     amount = float(body.amount or 0)
-    if not (amount == amount) or amount < MIN_DEPOSIT or amount > 100000:
+    if not (amount == amount) or amount < db.limit("deposit_min") or amount > db.limit("deposit_max"):
         raise HTTPException(400, detail={"code": "bad_amount"})
     amount = round(amount, 2)
     stars = int(math.ceil(amount * STARS_PER_COIN))
@@ -429,7 +441,8 @@ def rewards_view(uid: int) -> dict:
     ]
     return {"gems": db.get_gems(uid), "tasks": tasks,
             "exchange": [{"gems": g, "coins": int(g * m)} for g, m in GEM_TIERS],
-            "balance_ton": db.get_coins(uid)}
+            "balance_ton": db.get_coins(uid),
+            "withdraw": {"min": db.limit("withdraw_min"), "max": db.limit("withdraw_max"), "daily": db.limit("withdraw_daily")}}
 
 
 class RewardIn(BaseModel):
@@ -496,6 +509,70 @@ async def user_settings(request: Request, x_init_data: str | None = Header(None)
     return {"ok": True, "settings": db.kv_get(uid, "settings", {}) or {}}
 
 
+
+# ---------- рефералы и промокоды ----------
+import re as _re_ref
+_CODE_RE = _re_ref.compile(r"^[A-Za-z0-9_]{3,20}$")
+
+
+class CodeIn(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/referral/create")
+async def ref_create(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    return {"referral": referral_view(uid)}
+
+
+@app.post("/api/referral/code/check")
+async def ref_code_check(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    code = (body.code or "").strip()
+    if not _CODE_RE.match(code):
+        raise HTTPException(400, detail={"code": "code_invalid", "message": "Код: 3–20 символов, латиница, цифры и _"})
+    owner = db.code_owner(code)
+    return {"available": owner is None or owner == uid}
+
+
+@app.post("/api/referral/code/create")
+@app.post("/api/referral/code/rename")
+async def ref_code_save(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    code = (body.code or "").strip()
+    if not _CODE_RE.match(code):
+        raise HTTPException(400, detail={"code": "code_invalid", "message": "Код: 3–20 символов, латиница, цифры и _"})
+    if not db.code_set(uid, code):
+        raise HTTPException(400, detail={"code": "code_taken", "message": "Код уже занят"})
+    return {"referral": referral_view(uid)}
+
+
+@app.post("/api/referral/withdraw")
+async def ref_withdraw(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    bal = float(db.kv_get(uid, "ref_balance", 0) or 0)
+    if bal < 1:
+        raise HTTPException(400, detail={"code": "below_minimum"})
+    db.kv_set(uid, "ref_balance", 0)
+    db.add_coins(uid, round(bal, 2))
+    db.ledger(0, round(bal, 2))
+    return {"referral": referral_view(uid), "balance_ton": db.get_coins(uid)}
+
+
+@app.post("/api/promo")
+async def promo(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    code = (body.code or "").strip()
+    owner = db.code_owner(code) if code else None
+    if not owner:
+        raise HTTPException(400, detail={"code": "not_found"})
+    if owner == uid:
+        raise HTTPException(400, detail={"code": "promo_inactive", "message": "Свой код активировать нельзя"})
+    if db.ref_of(uid) is not None or not db.ref_attach(uid, owner):
+        raise HTTPException(400, detail={"code": "promo_inactive", "message": "Ты уже активировал код друга"})
+    return {"balance_ton": db.get_coins(uid), "amount_ton": 0, "rewards": [{"name": "Код друга активирован"}]}
+
+
 # ---------- pages ----------
 @app.get("/")
 async def index():
@@ -519,7 +596,7 @@ def maint(request: Request, x_init_data: str | None = Header(None)):
             blocked = not db.is_admin(verify_init(raw[4:].strip() if raw.lower().startswith("tma ") else raw.strip()))
         except HTTPException:
             blocked = True
-    return {"maintenance": on, "blocked": blocked}
+    return {"maintenance": on, "blocked": blocked, "text": db.get_setting("maintenance_text", "")}
 
 # ---------- state / spin / chests ----------
 @app.api_route("/api/state", methods=["GET", "POST"])
@@ -535,17 +612,22 @@ SELL_RATE = float(os.getenv("SELL_RATE", "0.9"))
 
 def gift_withdraw_fee() -> float:
     """Плата за вывод подарка (в монетах). Меняется в админ-боте: «Подарки апгрейда» → комиссия."""
-    try:
-        return max(0.0, float(db.get_setting("gift_withdraw_fee", os.getenv("GIFT_WITHDRAW_FEE", "5"))))
-    except ValueError:
-        return 5.0      # за сколько от цены подарка можно продать приз за монеты
+    return max(0.0, db.limit("gift_withdraw_fee"))      # за сколько от цены подарка можно продать приз за монеты
+
+
+def _sell_value(gift_id: str, price: float) -> float:
+    """Шляпа продаётся за HAT_VALUE минус комиссия, подарки — за SELL_RATE от цены."""
+    if str(gift_id) == "hat":
+        return round(HAT_VALUE * (1 - HOUSE_EDGE), 2)
+    return round(float(price or 0) * SELL_RATE, 2)
 
 
 def _prize_view(r: dict) -> dict:
     price = float(r.get("price") or 0)
     return {"id": r["id"], "name": r.get("name") or "", "tier": "gift:" + str(r.get("gift_id") or ""),
             "image": r.get("image") or "", "status": "withdraw_pending" if r.get("status") == "withdraw_pending" else "owned",
-            "sell_ton": round(price * SELL_RATE, 2), "value_ton": price, "withdraw_fee_ton": gift_withdraw_fee()}
+            "sell_ton": _sell_value(r.get("gift_id"), price), "value_ton": price,
+            "withdraw_fee_ton": gift_withdraw_fee()}
 
 
 def _my_prizes(uid: int) -> list:
@@ -562,7 +644,7 @@ class SellIn(BaseModel):
 async def sell(body: SellIn, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     with db.connect() as c:
-        row = c.execute("SELECT price FROM inventory WHERE rowid_=? AND user_id=?", (body.prize_id, uid)).fetchone()
+        row = c.execute("SELECT price, gift_id FROM inventory WHERE rowid_=? AND user_id=?", (body.prize_id, uid)).fetchone()
         if not row:
             raise HTTPException(400, detail={"code": "not_sellable"})
         cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND user_id=? AND status IN ('won','withdraw_pending')",
@@ -570,7 +652,7 @@ async def sell(body: SellIn, request: Request, x_init_data: str | None = Header(
         if cur.rowcount != 1:
             raise HTTPException(400, detail={"code": "not_sellable"})
         c.execute("UPDATE gift_queue SET status='cancelled' WHERE inv_row=? AND status='manual'", (body.prize_id,))
-    payout = round(float(row["price"] or 0) * SELL_RATE, 2)
+    payout = _sell_value(row["gift_id"], row["price"])
     bal = db.add_coins(uid, payout)
     db.ledger(0, payout)
     return {"payout_ton": payout, "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
@@ -581,16 +663,29 @@ async def sell_all(request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     total, n = 0.0, 0
     with db.connect() as c:
-        rows = c.execute("SELECT rowid_ AS id, price FROM inventory WHERE user_id=? AND status='won'", (uid,)).fetchall()
+        rows = c.execute("SELECT rowid_ AS id, price, gift_id FROM inventory WHERE user_id=? AND status='won'", (uid,)).fetchall()
         for r in rows:
             cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND status='won'", (r["id"],))
             if cur.rowcount == 1:
-                total += round(float(r["price"] or 0) * SELL_RATE, 2)
+                total += _sell_value(r["gift_id"], r["price"])
                 n += 1
     bal = db.add_coins(uid, total) if total else db.get_coins(uid)
     if total:
         db.ledger(0, total)
     return {"count": n, "payout_ton": round(total, 2), "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
+
+
+REF_APP_LINK = os.getenv("REF_APP_LINK", "https://staticgram.top/winlinebot/winline").rstrip("/")
+
+
+def referral_view(uid: int) -> dict:
+    base = REF_APP_LINK
+    bot_base = base.rsplit("/", 1)[0] if base.count("/") > 3 else base
+    return {"percent": db.limit("ref_percent"), "code": db.code_of(uid), "code_enabled": True,
+            "code_uses": db.ref_count(uid), "code_benefits": {}, "created": True,
+            "link": f"{base}?startapp=ref{uid}", "bot_link": f"{bot_base}?start=ref{uid}",
+            "count": db.ref_count(uid), "earned_ton": float(db.kv_get(uid, "ref_earned", 0) or 0),
+            "balance_ton": float(db.kv_get(uid, "ref_balance", 0) or 0), "min_withdraw_ton": 1, "pending_ton": 0}
 
 
 def build_state(uid: int) -> dict:
@@ -612,7 +707,8 @@ def build_state(uid: int) -> dict:
     tour = db.kv_get(uid, "tour_sections", None)
     if tour is None:       # лавка пока закрыта — обучение не показываем
         tour = ["welcome", "shop", "achievements", "quests"]
-    need = lambda lv: (lv - 1) ** 2 * 5
+    base = db.limit("level_base")
+    need = lambda lv: int(base * (lv - 1) ** 1.6)
     lvl = 1
     while lvl < 60 and turn >= need(lvl + 1):
         lvl += 1
@@ -628,9 +724,11 @@ def build_state(uid: int) -> dict:
             "gift_upgrade": gifts_on, "tier_enabled": False,
             "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
             "tiers": {"random": random_tier},
-            "min_bet": MIN_BET, "max_bet": MAX_BET, "min_deposit_ton": MIN_DEPOSIT,
-            "stars_deposit": {"enabled": bool(BOT_TOKEN), "per_ton": STARS_PER_COIN, "min_ton": MIN_DEPOSIT, "lock_days": 0},
-            "chests": {"min_bet": MIN_BET, "max_bet": MAX_BET, "ladder": _ladder()},
+            "min_bet": db.limit("bet_min"), "max_bet": db.limit("bet_max"), "min_deposit_ton": db.limit("deposit_min"),
+            "stars_deposit": {"enabled": bool(BOT_TOKEN), "per_ton": STARS_PER_COIN, "min_ton": db.limit("deposit_min"),
+                              "max_ton": db.limit("deposit_max"), "lock_days": 0, "presets": [1000, 5000, 10000]},
+            "withdraw": {"min": db.limit("withdraw_min"), "max": db.limit("withdraw_max"), "daily": db.limit("withdraw_daily")},
+            "chests": {"min_bet": db.limit("bet_min"), "max_bet": db.limit("bet_max"), "ladder": _ladder()},
             "ui_texts": {},
         },
         "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
@@ -638,7 +736,7 @@ def build_state(uid: int) -> dict:
         "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
         "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
         "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
-        "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
+        "referral": referral_view(uid), "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
     }
 
 
@@ -679,8 +777,8 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
         cost = round(prize * show / (1 - GIFT_MARGIN), 2)      # цену диктует сервер (та же формула, что у фронта)
     else:
         cost = round(HAT_VALUE * show, 2)
-    if not (cost == cost) or cost < MIN_BET or cost > MAX_BET:
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
+    if not (cost == cost) or cost < db.limit("bet_min") or cost > db.limit("bet_max"):
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
     real = show        # показанный шанс = настоящий; комиссия заложена в цену/выплату
     if not db.spend(uid, cost):
         raise HTTPException(400, detail={"code": "insufficient_funds"})
@@ -697,8 +795,11 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
             )
         gift_row = {"id": body.gift, "name": (meta or {}).get("name"), "price": payout}
     elif win:
-        payout = round(HAT_VALUE * (1 - HOUSE_EDGE), 2)
-        db.add_coins(uid, payout)
+        payout = _sell_value("hat", HAT_VALUE)           # шляпа попадает в «Мои призы», продать её можно за монеты
+        with db.connect() as c:
+            c.execute("INSERT INTO inventory(user_id,gift_id,name,image,price,status) VALUES(?,?,?,?,?,?)",
+                      (uid, "hat", "Шляпа волшебника", "/images/hat.png", HAT_VALUE, "won"))
+        gift_row = {"id": "hat", "name": "Шляпа волшебника", "price": HAT_VALUE, "image": "/images/hat.png"}
     db.ledger(cost, payout if win else 0)
     db.add_turnover(uid, cost)
     with db.connect() as c:
@@ -713,8 +814,8 @@ def _mult(opened, empties):
 async def chests_start(body: ChestStart, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
     bet, empties = float(body.bet), int(body.empties)
-    if not (bet == bet) or bet < MIN_BET or bet > MAX_BET:
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
+    if not (bet == bet) or bet < db.limit("bet_min") or bet > db.limit("bet_max"):
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
     if empties not in CX_CHOICES:
         raise HTTPException(400, detail={"code": "bad_empties"})
     if not db.spend(uid, bet): raise HTTPException(400, detail={"code": "insufficient_funds"})
@@ -796,8 +897,8 @@ async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None 
     uid = uid_from(request, x_init_data)
     amount, mult = float(body.amount), int(body.mult)
     if mult not in UPGRADE_BASE: raise HTTPException(400, "mult 2/5/10")
-    if not (amount == amount) or amount < MIN_BET or amount > MAX_BET:   # отрицательная сумма раньше давала деньги
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": MIN_BET, "max_ton": MAX_BET})
+    if not (amount == amount) or amount < db.limit("bet_min") or amount > db.limit("bet_max"):   # отрицательная сумма раньше давала деньги
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
     with db.connect() as c:
         r = c.execute("SELECT upgrade_win_streak,upgrade_lose_streak FROM users WHERE id=?", (uid,)).fetchone()
         ws, ls = int(r["upgrade_win_streak"] or 0), int(r["upgrade_lose_streak"] or 0)
@@ -851,26 +952,30 @@ async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = He
     uid = uid_from(request, x_init_data)
     if getattr(body, "prize_id", 0):                 # фронт зовёт этот же путь для вывода подарка
         return await prize_withdraw(uid, int(body.prize_id))
-    if body.stars != WITHDRAW_STEP:
-        raise HTTPException(400, f"only {WITHDRAW_STEP}")
+    amount = int(body.stars or 0)
+    wmin, wmax, wday = int(db.limit("withdraw_min")), int(db.limit("withdraw_max")), int(db.limit("withdraw_daily"))
+    if amount < wmin:
+        raise HTTPException(400, detail={"code": "below_min", "message": f"Минимум для вывода — {wmin}★"})
+    if amount > wmax:
+        raise HTTPException(400, detail={"code": "above_max", "message": f"Максимум за один вывод — {wmax}★"})
     rid = uuid.uuid4().hex
     with db.connect() as c:
         since = int(time.time()) - 86400
         already = c.execute(
             "SELECT COALESCE(SUM(stars),0) s FROM withdrawals WHERE user_id=? AND status IN ('pending','done') AND created>=?",
             (uid, since)).fetchone()["s"]
-        if int(already) + WITHDRAW_STEP > DAILY_WITHDRAW_CAP:
-            raise HTTPException(400, f"лимит {DAILY_WITHDRAW_CAP}/сутки")
-        if not db.spend(uid, WITHDRAW_STEP):
-            raise HTTPException(400, detail={"code": "insufficient_funds"})
-        c.execute("INSERT INTO withdrawals VALUES(?,?,?,?,?,?)",
-                  (rid, uid, WITHDRAW_STEP, "pending", "", int(time.time())))
-    res = await bot_raw("withdrawStarBalance", {"user_id": uid, "star_count": WITHDRAW_STEP, "request_id": rid})
+        if int(already) + amount > wday:
+            raise HTTPException(400, detail={"code": "daily_cap", "message": f"Дневной лимит вывода — {wday}★ (осталось {max(0, wday - int(already))}★)"})
+    if not db.spend(uid, amount):
+        raise HTTPException(400, detail={"code": "insufficient_funds"})
+    with db.connect() as c:
+        c.execute("INSERT INTO withdrawals VALUES(?,?,?,?,?,?)", (rid, uid, amount, "pending", "", int(time.time())))
+    res = await bot_raw("withdrawStarBalance", {"user_id": uid, "star_count": amount, "request_id": rid})
     ok, err = bool(res.get("ok")), str(res.get("description", ""))
     with db.connect() as c:
         c.execute("UPDATE withdrawals SET status=? WHERE request_id=?", ("done" if ok else "failed", rid))
     if not ok:
-        db.add_coins(uid, WITHDRAW_STEP)
+        db.add_coins(uid, amount)
         print("withdrawStarBalance failed:", err)
         if "BALANCE_TOO_LOW" in err:
             await _notify_admins("⚠️ Вывод звёзд игроку не прошёл: на балансе бота не хватает звёзд. Пополни баланс бота.")
