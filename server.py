@@ -240,19 +240,22 @@ def available_stock():
         "count": 9999,
         "sg_id": "",
     }]
-    for g in db.catalog_list(enabled_only=True):
-        if g["price"] <= 0:
-            continue
-        if str(g["slug"]) == "hat":
-            continue
-        out.append({
-            "id": g["slug"],
-            "name": g["name"],
-            "image": g["image"],
-            "price": g["price"],
-            "count": 9999,
-            "sg_id": g.get("sg_id", ""),
-        })
+    try:
+        for g in db.catalog_list(enabled_only=True):
+            if g["price"] <= 0:
+                continue
+            if str(g["slug"]) == "hat":
+                continue
+            out.append({
+                "id": g["slug"],
+                "name": g["name"],
+                "image": g["image"],
+                "price": g["price"],
+                "count": 9999,
+                "sg_id": g.get("sg_id", ""),
+            })
+    except Exception as e:
+        print("available_stock:", e)
     return out
 
 
@@ -630,8 +633,33 @@ def maint(request: Request, x_init_data: str | None = Header(None)):
 # ---------- state / spin / chests ----------
 @app.api_route("/api/state", methods=["GET", "POST"])
 def api_state(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return build_state(uid)
+    try:
+        uid = uid_from(request, x_init_data)
+    except HTTPException as e:
+        # без initData / плохой токен — логируем, фронт не должен висеть вечно
+        print("api/state auth:", e.status_code, e.detail)
+        raise
+    try:
+        return build_state(uid)
+    except Exception as e:
+        print("api/state build_state ERROR:", e)
+        # минимальный ответ, чтобы загрузчик отпустил экран
+        return {
+            "balance_ton": 0, "hatcoin_balance": 0, "free_spin_coins": 0,
+            "user": {"id": 0, "username": ""}, "weapons": ["staff"], "permanent_weapons": ["staff"],
+            "prizes": [], "chest_round": None,
+            "config": {
+                "chance_min": 0.05, "chance_max": 0.70,
+                "sections": {"upgrade": True, "chests": True, "leaders": True, "staking": False},
+                "gift_upgrade": False, "tier_enabled": False,
+                "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
+                "tiers": {"random": {"chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника", "value_ton": HAT_VALUE}},
+                "upgrade_modes": {"nft": True, "stars": True},
+            },
+            "stats": {"turnover_ton": 0, "withdrawn_ton": 0, "withdrawn_count": 0, "games": 0, "best": None},
+            "theme": "halloween", "server_time": int(time.time()), "relayer_stock": [],
+            "error": "state_partial",
+        }
 
 
 STARS_PER_COIN = float(os.getenv("STARS_PER_COIN", "1"))          # сколько звёзд за 1 монету при пополнении
@@ -717,6 +745,21 @@ def referral_view(uid: int) -> dict:
             "balance_ton": float(db.kv_get(uid, "ref_balance", 0) or 0), "min_withdraw_ton": 1, "pending_ton": 0}
 
 
+def _safe_best(uid):
+    try:
+        return db.best_drop(uid)
+    except Exception as e:
+        print("best_drop:", e)
+        return None
+
+def _safe_games(uid):
+    try:
+        return db.count_games(uid)
+    except Exception as e:
+        print("count_games:", e)
+        return 0
+
+
 def build_state(uid: int) -> dict:
     turn = db.turnover(uid)
     weapons = ["staff"] + (["skeleton"] if turn >= 30000 else [])
@@ -771,7 +814,7 @@ def build_state(uid: int) -> dict:
             "ui_texts": {},
         },
         "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
-                  "games": db.count_games(uid), "best": db.best_drop(uid)},
+                  "games": _safe_games(uid), "best": _safe_best(uid)},
         "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
         "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
         "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
