@@ -11,7 +11,7 @@
     'static/scenes/halloween-nightfall.svg','static/halloween/nav-left.png','static/halloween/nav-mid.png','static/halloween/nav-right.png',
     'static/halloween/ui/side-speed.svg','static/halloween/ui/side-weapon.svg','static/halloween/ui/pumpkin-btn.svg','static/halloween/ui/plate-dark.svg','static/halloween/ui/plate-brown.svg',
     'static/chests/coffin/lid.svg','static/chests/coffin/base-candy.svg','static/chests/coffin/base-skeleton.svg','static/chests/coffin/base-empty.svg'];
-  const MIN_MS = 1600, SLOW_MS = 12000, RETRY_MS = 30000;
+  const MIN_MS = 800, SLOW_MS = 4000, RETRY_MS = 8000, FORCE_BOOT_MS = 400;
   const t0 = Date.now();
 
   /* ---------- разметка и стили ---------- */
@@ -111,6 +111,7 @@
     });
   };
   window.Boot = { done: false, st, finish: () => { forceDone = true; } };
+  setTimeout(() => { try { forceDone = true; st.stateDone = true; st.pending = 0; st.imgs = st.imgTotal; st.dom = true; } catch(e){} }, 400);
   let forceDone = false;
 
   /* ---------- прогресс ---------- */
@@ -124,26 +125,30 @@
   };
   const target = () => {
     const el = Date.now() - t0;
-    const real = (st.dom ? 8 : 2) + (st.fonts ? 7 : 0) + 35 * (st.imgs / st.imgTotal) + (st.stateDone ? 35 : 0) + (st.stateDone && st.pending === 0 ? 15 : 0);
-    const creep = Math.min(6, el / 4000);                     // медленно ползём, пока сервер думает
-    const done = st.dom && st.imgs >= st.imgTotal && st.stateDone && st.pending === 0 && Date.now() - st.lastNet > 450 && el > MIN_MS;
-    if (done || forceDone) return 100;
-    return Math.min(94, real + (real < 94 ? creep : 0));
+    if (el > FORCE_BOOT_MS) { st.stateDone = true; st.pending = 0; st.imgs = st.imgTotal; st.dom = true; forceDone = true; }
+    const real = (st.dom ? 8 : 2) + (st.fonts ? 7 : 0) + 35 * (st.imgs / Math.max(1, st.imgTotal)) + (st.stateDone ? 35 : 0) + (st.stateDone && st.pending === 0 ? 15 : 0);
+    const creep = Math.min(10, el / 2000);
+    if (forceDone || el > FORCE_BOOT_MS) return 100;
+    const done = st.dom && st.imgs >= st.imgTotal && st.stateDone && st.pending === 0 && el > MIN_MS;
+    if (done) return 100;
+    return Math.min(94, real + creep);
   };
   function frame() {
     const tg = maxTg = Math.max(maxTg, target());
-    shown += (tg - shown) * (tg >= 100 ? 0.12 : 0.045);
+    shown += (tg - shown) * (tg >= 100 ? 0.18 : 0.06);
     const p = Math.max(0, Math.min(100, shown));
-    $('bootFill').style.width = p + '%';
-    $('bootSlime').style.left = (39.45 + p / 100 * 21.6 - 1) + '%';
-    $('bootPct').textContent = Math.floor(p) + '%';
-    $('bootSt').textContent = p >= 99 ? 'Готово!' : label();
+    try {
+      $('bootFill').style.width = p + '%';
+      $('bootSlime').style.left = (39.45 + p / 100 * 21.6 - 1) + '%';
+      $('bootPct').textContent = Math.floor(p) + '%';
+      $('bootSt').textContent = p >= 99 ? 'Готово!' : label();
+    } catch (_) {}
     const el = Date.now() - t0;
-    if (el > SLOW_MS && !finished && !st.stateDone) $('bootSt').textContent = 'Сервер отвечает долго…';
-    if (el > RETRY_MS && !finished && !st.stateDone) $('bootRetry').style.display = 'block';
+    if (el > SLOW_MS && !finished && !st.stateDone) try { $('bootSt').textContent = 'Сервер отвечает долго…'; } catch(_){}
+    if (el > RETRY_MS && !finished) try { $('bootRetry').style.display = 'block'; } catch(_){}
     if (p >= 99.6 && !finished) {
       finished = true; window.Boot.done = true; document.body && document.body.classList.add('booted');
-      setTimeout(() => { root.classList.add('out'); setTimeout(() => root.remove(), 650); }, 350);
+      setTimeout(() => { try { root.classList.add('out'); setTimeout(() => root.remove(), 650); } catch(_){} }, 250);
       return;
     }
     requestAnimationFrame(frame);
@@ -5500,7 +5505,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 /* меню: ровная сетка 2 колонки, сверху главная игра на всю ширину */
 #view-menu .menu-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px!important;align-items:stretch!important;justify-items:stretch!important}
 #view-menu .menu-grid>.menu-card{width:auto!important;max-width:none!important;min-height:150px!important;margin:0!important;order:0!important;grid-column:auto!important;justify-self:stretch!important}
-#view-menu .menu-grid>#menuLeaders,#view-menu .menu-grid>#menuStaking{display:none!important}
+#view-menu .menu-grid>#menuLeaders{display:flex!important}#view-menu .menu-grid>#menuStaking{display:none!important}
 #view-menu .menu-grid>#menuChests{grid-column:1/-1!important}
 #view-menu .menu-grid>#menuInventory,#view-menu .menu-grid>#menuRewards{grid-column:auto!important;justify-self:stretch!important;width:auto!important;max-width:none!important}
 /* вывод звёзд: поле суммы */
@@ -6522,7 +6527,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       <p class="muted dep-note">Выберите способ пополнения</p>
       <div class="dep-methods">
         <button class="dep-method dep-ton" id="depChooseTon" type="button" data-method="ton">
-          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="GRAM" draggable="false"></span>
+          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/ton.png" alt="GRAM" draggable="false"></span>
           <span class="dep-m-copy"><b>GRAM</b><small>Через TON Connect, зачисление в течение минуты</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
@@ -6532,7 +6537,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
           <span class="dep-m-arrow">›</span>
         </button>
         <button class="dep-method dep-stars" id="depChooseStars" type="button" data-method="stars">
-          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="Stars" draggable="false"></span>
+          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="Stars" draggable="false"></span>
           <span class="dep-m-copy"><b>Звёзды StaticGram</b><small>Оплата звёздами через бота</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
@@ -6547,7 +6552,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepTon" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/images/star-px.png" alt="" draggable="false">Пополнение ★</h2>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/ton.png" alt="" draggable="false">Пополнение ★</h2>
       <p class="muted dep-note">Перевод зачислится автоматически в течение минуты.</p>
       <div class="dep-wallet">
         <span class="dep-wallet-addr" id="depWalletAddr">Кошелёк не подключён</span>
@@ -6581,7 +6586,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepStars" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/images/star-px.png" alt="" draggable="false">Пополнение звёздами</h2>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/star.png" alt="" draggable="false">Пополнение звёздами</h2>
       <p class="muted dep-note">Оплата звёздами StaticGram откроется прямо в приложении. Выбери сумму или впиши свою.</p>
       <div class="amount-row">
         <button class="amt" data-amt="1000" data-target="starsAmount">1к</button>
@@ -6590,7 +6595,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       </div>
       <input type="number" id="starsAmount" min="1" step="1" value="1000" inputmode="numeric" aria-label="Сумма пополнения, ★"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
       <div class="dep-quote"><span id="starsRate">1 ★ = 100 Stars</span><b id="starsQuote">—</b></div>
-      <div class="dep-lock"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="" draggable="false"><div><b id="starsLockTitle">Вывод подарков заблокирован на 21 день</b><small>После оплаты Stars вывод призов временно недоступен — дата появится после оплаты.</small></div></div>
+      <div class="dep-lock"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="" draggable="false"><div><b id="starsLockTitle">Вывод подарков заблокирован на 21 день</b><small>После оплаты Stars вывод призов временно недоступен — дата появится после оплаты.</small></div></div>
       <button class="cta dep-stars-pay" id="starsPayBtn" type="button">Оплатить Stars</button>
       <p class="dep-status" id="starsStatus" hidden=""></p>
     </div>
@@ -11327,7 +11332,7 @@ function syncKostyanBanner() {
   const root=document.documentElement,theme=activeEventKey();
   const sky=root.dataset.sky==='night'?'night':'day',curtains=root.dataset.hallCurtains==='closed'?'closed':'open';
   const hall=sky==='day'&&curtains==='open'?'/static/hall/shop.png?v=1':`/static/hall/shop-${sky}-${curtains}.png?v=1`;
-  const want=theme==='hall'?hall:theme==='basement'?'/static/basement/shop.png?v=1':theme==='halloween'?'/images/kostyan-halloween.png?v=1':'/img/kostyan-meadow.png?v=1';
+  const want=theme==='hall'?hall:theme==='basement'?'/static/basement/shop.png?v=1':theme==='halloween'?'/img/kostyan-halloween.png?v=1':'/img/kostyan-meadow.png?v=1';
   if(img.dataset.requested===want)return;
   img.dataset.requested=want;
   if(img.getAttribute('src')===want)return;
@@ -15059,5 +15064,5 @@ html[data-halloween="on"][data-theme][data-sky] body #view-upgrade #spinBtn:acti
 
 
 
-<script src="/static/app.js?v=20261104a" defer></script>
+<script src="/static/app.js?v=1" defer></script>
 </body></html>
