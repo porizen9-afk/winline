@@ -75,6 +75,10 @@ def _migrate():
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
         _col(c, "gift_queue", "fee", "REAL DEFAULT 0")
         _col(c, "catalog_gifts", "sg_id", "TEXT DEFAULT ''")
+        _col(c, "spin_log", "kind", "TEXT DEFAULT 'upgrade'")
+        _col(c, "spin_log", "target", "TEXT DEFAULT ''")
+        _col(c, "spin_log", "image", "TEXT DEFAULT ''")
+        _col(c, "spin_log", "payout", "REAL DEFAULT 0")
 
 def _col(c, table, col, typ):
     have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
@@ -175,6 +179,45 @@ def kv_set(uid, key, value):
     with connect() as c:
         c.execute("INSERT INTO user_kv(user_id,k,v) VALUES(?,?,?) ON CONFLICT(user_id,k) DO UPDATE SET v=excluded.v",
                   (uid, key, _j.dumps(value, ensure_ascii=False)))
+
+def log_game(uid, kind, win, cost, payout=0.0, target="", image="", chance=0.0):
+    """Запись в историю: kind = upgrade | stars | chests."""
+    with connect() as c:
+        c.execute(
+            "INSERT INTO spin_log(user_id,chance,cost,win,created,kind,target,image,payout) VALUES(?,?,?,?,?,?,?,?,?)",
+            (uid, float(chance), float(cost), 1 if win else 0, int(time.time()), kind, target or "", image or "", float(payout or 0)),
+        )
+
+def history(uid, n=50):
+    with connect() as c:
+        rows = c.execute(
+            "SELECT kind,target,image,cost,win,payout,created FROM spin_log WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (uid, int(n)),
+        ).fetchall()
+    return [{
+        "kind": (r["kind"] or "upgrade"),
+        "target": r["target"] or "",
+        "image": r["image"] or "",
+        "cost_ton": float(r["cost"] or 0),
+        "win": bool(r["win"]),
+        "payout_ton": float(r["payout"] or 0),
+        "ts": int(r["created"] or 0),
+    } for r in rows]
+
+def best_drop(uid):
+    with connect() as c:
+        r = c.execute(
+            "SELECT kind,target,image,payout FROM spin_log WHERE user_id=? AND win=1 AND payout>0 ORDER BY payout DESC, id DESC LIMIT 1",
+            (uid,),
+        ).fetchone()
+    if not r:
+        return None
+    return {
+        "value_ton": float(r["payout"]),
+        "name": r["target"] or "Выигрыш",
+        "tier": "stars" if (r["kind"] or "") == "stars" else ("gift:" + (r["target"] or "") if (r["kind"] or "") == "upgrade" and r["image"] else "random"),
+        "image": r["image"] or "",
+    }
 
 def count_games(uid):
     with connect() as c:
