@@ -1569,29 +1569,33 @@ try{
 }catch(e){console.error("[app.js] maintenance-gate.js",e)}
 ;
 
-/* ===== Апгрейд: ШЛЯПА / ПОДАРКИ / ЗВЁЗДЫ + вкл/выкл режимов ===== */
+/* ===== Апгрейд: внизу ПОДАРКИ | ЗВЁЗДЫ (без шляпы, без верхней панели) ===== */
 try{(()=>{
 'use strict';
 const q=(s,r=document)=>r.querySelector(s);
 const fmt=n=>{n=+n;return Number.isInteger(n)?String(n):n.toFixed(2).replace(/\.?0+$/,'')};
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-let cfg=null,mode='hat',busy=false,bal=0,host=null,bar=null,panel=null;
+let cfg=null,mode='gifts',busy=false,bal=0,host=null,bar=null,panel=null;
 const STAR_IMG='/images/star-px.png';
 const HAT_IMG='images/hat.png';
 const LIM=()=>Object.assign({min:0.1,max:250000,max_win:250000,edge:0.05,min_mult:1.1,max_mult:15,mults:[2,5,10,15]},(cfg&&cfg.stars_upgrade)||{});
 const MODES=()=>Object.assign({nft:true,stars:true},(cfg&&cfg.upgrade_modes)||{});
-
 const maxBet=()=>{const L=LIM();return Math.max(L.min,Math.floor(L.max/readMult()*100)/100)};
+
 function css(){
   if(q('#suCss'))return;
   const s=document.createElement('style');s.id='suCss';
   s.textContent=`
-.su-bar{display:flex;gap:6px;margin:8px 0 6px;width:100%;max-width:440px;align-self:center}
+/* топ в меню — принудительно показать (в index был display:none) */
+#view-menu .menu-grid>#menuLeaders{display:flex!important}
+
+/* переключатель внизу, рядом с кнопкой крутить */
+.su-bar{display:flex;gap:8px;width:100%;max-width:360px;margin:8px auto 0;order:50}
 .su-bar[hidden],.su-panel[hidden]{display:none!important}
-.su-bar button{flex:1;padding:10px 4px;font:inherit;font-size:9px;font-weight:700;letter-spacing:.03em;color:#ffe9b8;background:#2a1a10;border:3px solid #250f05;box-shadow:inset 2px 2px 0 #5a3a22,inset -2px -2px 0 #120805;cursor:pointer}
+.su-bar button{flex:1;padding:11px 8px;font:inherit;font-size:11px;font-weight:700;letter-spacing:.04em;color:#ffe9b8;background:#2a1a10;border:3px solid #250f05;box-shadow:inset 2px 2px 0 #5a3a22,inset -2px -2px 0 #120805;cursor:pointer}
 .su-bar button.on{color:#2a1600;background:linear-gradient(#ffd98a,#f0892a);box-shadow:inset 2px 2px 0 #ffe9b8,inset -2px -2px 0 #c0651a}
-.su-bar button:disabled,.su-bar button.locked{opacity:.35;cursor:not-allowed;filter:grayscale(.6)}
-.su-panel{display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px;margin:0 auto 8px;padding:12px 10px;color:#ffedcd;background:linear-gradient(180deg,#2a1c14ee,#1a110cee);border:3px solid #250f05;box-shadow:inset 2px 2px 0 #6b4429,inset -2px -2px 0 #120805}
+.su-bar button:disabled,.su-bar button.locked{opacity:.35;cursor:not-allowed;filter:grayscale(.7)}
+.su-panel{display:flex;flex-direction:column;gap:8px;width:100%;max-width:360px;margin:8px auto 4px;padding:12px 10px;order:51;color:#ffedcd;background:linear-gradient(180deg,#2a1c14f2,#1a110cf2);border:3px solid #250f05;box-shadow:inset 2px 2px 0 #6b4429,inset -2px -2px 0 #120805}
 .su-bal{font-size:10px;text-align:right;opacity:.9}
 .su-l{font-size:9px;letter-spacing:.06em;color:#ffd28d}
 .su-row{display:flex;gap:6px;align-items:center}
@@ -1606,6 +1610,7 @@ function css(){
 .su-go:disabled{opacity:.55;cursor:default}
 .su-res{margin:0;min-height:1.4em;text-align:center;font-size:12px;font-weight:700}
 .su-res.win{color:#8dff9d}.su-res.lose{color:#ff9a8d}.su-res.info{color:#ffd28d}
+#view-upgrade{display:flex;flex-direction:column}
 #view-upgrade.su-stars #spinBtn{opacity:.35;pointer-events:none}
 #view-upgrade.su-locked #spinBtn{opacity:.35;pointer-events:none}
 `;
@@ -1618,39 +1623,53 @@ function setCenter(kind){
   if(!hat)return;
   if(kind==='stars'){
     hat.hidden=false;hat.classList.add('is-gift');hat.src=STAR_IMG;if(hq)hq.hidden=true;
-  }else if(kind==='hat'){
-    hat.hidden=false;hat.classList.remove('is-gift');hat.src=HAT_IMG;if(hq)hq.hidden=true;
   }else{
-    /* gifts — шляпа по умолчанию, можно сменить кликом */
-    hat.hidden=false;hat.classList.remove('is-gift');hat.src=HAT_IMG;if(hq)hq.hidden=false;
+    /* как раньше: до выбора подарка — только «?», без шляпы */
+    const hasGift = !!(window.selectedGift && (window.selectedGift.slug || window.selectedGift.id));
+    if(hasGift){
+      hat.hidden=false;hat.classList.add('is-gift');
+      if(window.selectedGift.image)hat.src=window.selectedGift.image;
+      if(hq)hq.hidden=true;
+    }else{
+      hat.hidden=true;hat.classList.remove('is-gift');
+      if(hq)hq.hidden=false;
+    }
   }
 }
 
 function build(){
   host=q('#view-upgrade');if(!host||q('#suPanel'))return !!host;
   css();
-  bar=document.createElement('div');bar.className='su-bar';bar.hidden=true;
-  bar.innerHTML='<button type="button" data-m="hat">🎩 ШЛЯПА</button><button type="button" data-m="gifts">🎁 ПОДАРКИ</button><button type="button" data-m="stars">★ ЗВЁЗДЫ</button>';
+  bar=document.createElement('div');bar.className='su-bar';
+  bar.innerHTML='<button type="button" data-m="gifts">ПОДАРКИ</button><button type="button" data-m="stars">ЗВЕЗДЫ</button>';
   panel=document.createElement('div');panel.id='suPanel';panel.className='su-panel';panel.hidden=true;
   panel.innerHTML=`
 <div class="su-bal">Баланс: <b id="suBal">0</b> ★</div>
-<div class="su-l">СТАВКА ★ · выигрыш за раз до 250 000 ★</div>
-<div class="su-row"><input id="suAmt" type="number" inputmode="decimal" min="1" step="1" value="100" aria-label="Ставка"><button type="button" data-qa="min">МИН</button><button type="button" data-qa="half">½</button><button type="button" data-qa="dbl">×2</button><button type="button" data-qa="max">МАКС</button></div>
+<div class="su-l">СТАВКА ★ · выигрыш до 250 000 ★</div>
+<div class="su-row"><input id="suAmt" type="number" inputmode="decimal" min="1" step="1" value="100"><button type="button" data-qa="min">МИН</button><button type="button" data-qa="half">½</button><button type="button" data-qa="dbl">×2</button><button type="button" data-qa="max">МАКС</button></div>
 <div class="su-l">МНОЖИТЕЛЬ</div>
 <div class="su-row su-mults"><button type="button" data-x="2">x2</button><button type="button" data-x="5">x5</button><button type="button" data-x="10">x10</button><button type="button" data-x="15">x15</button></div>
-<div class="su-row"><span class="su-l">СВОЙ x</span><input id="suMult" type="number" inputmode="decimal" step="0.1" min="1.1" max="15" value="2" aria-label="Свой множитель"></div>
+<div class="su-row"><span class="su-l">СВОЙ x</span><input id="suMult" type="number" inputmode="decimal" step="0.1" min="1.1" max="15" value="2"></div>
 <div class="su-info"><span>Шанс: <b id="suChance">—</b></span><span>Выигрыш: <b id="suWin">—</b> ★</span></div>
 <div class="su-hint" id="suHint"></div>
-<button class="su-go" id="suGo" type="button">★ УЛУЧШИТЬ</button>
+<button class="su-go" id="suGo" type="button">УЛУЧШИТЬ</button>
 <p class="su-res" id="suRes"></p>`;
-  host.prepend(panel);host.prepend(bar);
+  /* вниз: после кнопки спина, если есть; иначе в конец view */
+  const spin=q('#spinBtn',host)||q('.spin-wrap',host);
+  if(spin&&spin.parentElement){
+    const parent=spin.parentElement;
+    parent.appendChild(bar);
+    parent.appendChild(panel);
+  }else{
+    host.appendChild(bar);host.appendChild(panel);
+  }
   bar.addEventListener('click',e=>{
     const b=e.target.closest('button[data-m]');if(!b||b.disabled)return;
     setMode(b.dataset.m);
   });
   const amt=q('#suAmt',panel),mul=q('#suMult',panel);
-  amt.addEventListener('input',()=>{const mb=maxBet();let v=parseFloat(amt.value);if(v>mb)amt.value=String(mb);update()});
-  mul.addEventListener('input',()=>{const L=LIM();let v=parseFloat(mul.value);if(v>L.max_mult)mul.value=String(L.max_mult);update()});
+  amt.addEventListener('input',()=>{if(parseFloat(amt.value)>maxBet())amt.value=String(maxBet());update()});
+  mul.addEventListener('input',()=>{const L=LIM();if(parseFloat(mul.value)>L.max_mult)mul.value=String(L.max_mult);update()});
   mul.addEventListener('change',()=>{const L=LIM();mul.value=String(Math.round(clamp(parseFloat(mul.value)||L.min_mult,L.min_mult,L.max_mult)*100)/100);update()});
   amt.addEventListener('change',()=>{amt.value=String(readAmt());update()});
   panel.addEventListener('click',e=>{
@@ -1662,6 +1681,10 @@ function build(){
   });
   q('#suGo',panel).addEventListener('click',go);
   new MutationObserver(()=>{if(!host.hidden)refresh()}).observe(host,{attributes:true,attributeFilter:['hidden']});
+  const hat=document.getElementById('centerHat');
+  if(hat){
+    new MutationObserver(()=>{if(mode==='gifts')setCenter('gifts')}).observe(hat,{attributes:true,attributeFilter:['src','hidden','class']});
+  }
   return true;
 }
 const readAmt=()=>{const L=LIM();const v=parseFloat(q('#suAmt',panel).value);return Math.round(clamp(isFinite(v)?v:L.min,L.min,maxBet())*100)/100};
@@ -1672,8 +1695,7 @@ function update(){
   const L=LIM(),m=readMult(),a=readAmt();
   const ae=q('#suAmt',panel);if(parseFloat(ae.value)>maxBet())ae.value=String(maxBet());
   q('#suHint',panel).textContent='Макс. ставка при x'+fmt(m)+': '+fmt(maxBet())+' ★ · выигрыш до '+fmt(L.max)+' ★';
-  const ch=Math.min(1,(1-L.edge)/m)*100;
-  q('#suChance',panel).textContent=ch.toFixed(2)+'%';
+  q('#suChance',panel).textContent=(Math.min(1,(1-L.edge)/m)*100).toFixed(2)+'%';
   q('#suWin',panel).textContent=fmt(Math.round(a*m*100)/100);
   q('#suBal',panel).textContent=fmt(Math.round(bal*100)/100);
   panel.querySelectorAll('button[data-x]').forEach(b=>b.classList.toggle('on',Math.abs(+b.dataset.x-m)<1e-9));
@@ -1684,16 +1706,14 @@ function say(t,cls){const r=q('#suRes',panel);r.textContent=t||'';r.className='s
 function setMode(m){
   const M=MODES();
   const nftOn=M.nft!==false, starsOn=M.stars!==false;
-  if((m==='hat'||m==='gifts')&&!nftOn)return;
+  if(m==='gifts'&&!nftOn)return;
   if(m==='stars'&&!starsOn)return;
   mode=m;
   host.classList.toggle('su-stars',m==='stars');
   host.classList.toggle('su-locked',!nftOn&&!starsOn);
   panel.hidden=m!=='stars';
-  bar.querySelectorAll('button[data-m]').forEach(b=>{
-    b.classList.toggle('on',b.dataset.m===m);
-  });
-  setCenter(m==='stars'?'stars':m==='gifts'?'gifts':'hat');
+  bar.querySelectorAll('button[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+  setCenter(m==='stars'?'stars':'gifts');
   if(m==='stars')update();
 }
 function applyModes(){
@@ -1701,23 +1721,15 @@ function applyModes(){
   const M=MODES();
   const nftOn=M.nft!==false, starsOn=M.stars!==false;
   bar.hidden=false;
-  const bHat=bar.querySelector('[data-m="hat"]');
   const bGif=bar.querySelector('[data-m="gifts"]');
   const bSta=bar.querySelector('[data-m="stars"]');
-  /* заблокировать кнопки, если режим выключен */
-  [bHat,bGif].forEach(b=>{if(!b)return;b.disabled=!nftOn;b.classList.toggle('locked',!nftOn);b.title=nftOn?'':'Апгрейд на подарки закрыт'});
+  if(bGif){bGif.disabled=!nftOn;bGif.classList.toggle('locked',!nftOn);bGif.title=nftOn?'':'Апгрейд на подарки закрыт'}
   if(bSta){bSta.disabled=!starsOn;bSta.classList.toggle('locked',!starsOn);bSta.title=starsOn?'':'Апгрейд звёзд закрыт'}
   const go=q('#suGo',panel);
-  if(!nftOn&&!starsOn){
-    setMode('stars');go.disabled=true;say('Апгрейд временно закрыт','info');
-    host.classList.add('su-locked');return;
-  }
-  go.disabled=busy;
-  host.classList.remove('su-locked');
-  /* авто: если текущий режим закрыт — переключить на доступный */
-  if((mode==='hat'||mode==='gifts')&&!nftOn&&starsOn)setMode('stars');
-  else if(mode==='stars'&&!starsOn&&nftOn)setMode('hat');
-  else if(mode!=='hat'&&mode!=='gifts'&&mode!=='stars')setMode(nftOn?'hat':'stars');
+  if(!nftOn&&!starsOn){setMode('stars');go.disabled=true;say('Апгрейд временно закрыт','info');host.classList.add('su-locked');return}
+  go.disabled=busy;host.classList.remove('su-locked');
+  if(mode==='gifts'&&!nftOn&&starsOn)setMode('stars');
+  else if(mode==='stars'&&!starsOn&&nftOn)setMode('gifts');
   else setMode(mode);
   if(!(!nftOn&&!starsOn)&&q('#suRes',panel).textContent==='Апгрейд временно закрыт')say('');
 }
@@ -1749,7 +1761,7 @@ async function go(){
     else{say('МИМО −'+fmt(r.bet)+' ★','lose');try{window.GameAudio&&window.GameAudio.effect('miss')}catch(_){}}
     try{window.refreshState&&window.refreshState()}catch(_){}
   }catch(e){say(errText(e),'lose');if(e&&e.data&&((e.data.detail||e.data).code==='upgrade_closed'))refresh()}
-  busy=false;btn.disabled=false;btn.textContent='★ УЛУЧШИТЬ';update();
+  busy=false;btn.disabled=false;btn.textContent='УЛУЧШИТЬ';update();
 }
 function init(){
   if(typeof api!=='function'||!build())return setTimeout(init,300);
@@ -1757,6 +1769,7 @@ function init(){
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();}catch(e){console.error("[app.js] stars-upgrade",e)}
+
 
 
 
