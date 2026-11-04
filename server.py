@@ -784,10 +784,18 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
         cost = round(HAT_VALUE * show, 2)
     if not (cost == cost) or cost < db.limit("bet_min") or cost > db.limit("bet_max"):
         raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
-    real = show        # показанный шанс = настоящий; комиссия заложена в цену/выплату
+    # Показываем show (например 50%), крутим real ниже (≈45%).
+    # Срез 4–8 п.п.: больше шанс и ставка — чуть жёстче (как в старом казике).
+    cut = 0.04 + 0.03 * (show / 0.70)          # ~4% при малых, ~7% при 70%
+    if cost >= 500:
+        cut += 0.01
+    if cost >= 2000:
+        cut += 0.01
+    cut = min(0.08, cut)
+    real = max(0.01, round(show - cut, 4))
     if not db.spend(uid, cost):
         raise HTTPException(400, detail={"code": "insufficient_funds"})
-    win = random.random() < real
+    win = random.SystemRandom().random() < real
     db.streak_update(uid, win)
     gift_row = None
     payout = 0.0
