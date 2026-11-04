@@ -1569,13 +1569,15 @@ try{
 }catch(e){console.error("[app.js] maintenance-gate.js",e)}
 ;
 
-/* ===== Апгрейд звёзд: режим «★ ЗВЁЗДЫ» в апгрейде (ставка до лимита, множитель 1.1–15x) ===== */
+/* ===== Апгрейд: ШЛЯПА / ПОДАРКИ / ЗВЁЗДЫ + вкл/выкл режимов ===== */
 try{(()=>{
 'use strict';
 const q=(s,r=document)=>r.querySelector(s);
 const fmt=n=>{n=+n;return Number.isInteger(n)?String(n):n.toFixed(2).replace(/\.?0+$/,'')};
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-let cfg=null,mode='nft',busy=false,bal=0,host=null,bar=null,panel=null;
+let cfg=null,mode='hat',busy=false,bal=0,host=null,bar=null,panel=null;
+const STAR_IMG='/images/star-px.png';
+const HAT_IMG='images/hat.png';
 const LIM=()=>Object.assign({min:0.1,max:250000,max_win:250000,edge:0.05,min_mult:1.1,max_mult:15,mults:[2,5,10,15]},(cfg&&cfg.stars_upgrade)||{});
 const MODES=()=>Object.assign({nft:true,stars:true},(cfg&&cfg.upgrade_modes)||{});
 
@@ -1584,16 +1586,16 @@ function css(){
   if(q('#suCss'))return;
   const s=document.createElement('style');s.id='suCss';
   s.textContent=`
-#view-upgrade.su-stars>:not(.su-keep){display:none!important}
-.su-bar{display:flex;gap:8px;margin:0 0 10px;width:100%}
+.su-bar{display:flex;gap:6px;margin:8px 0 6px;width:100%;max-width:440px;align-self:center}
 .su-bar[hidden],.su-panel[hidden]{display:none!important}
-.su-bar button{flex:1;padding:10px 6px;font:inherit;font-size:10px;font-weight:700;letter-spacing:.04em;color:#ffe9b8;background:#2a1a10;border:3px solid #250f05;box-shadow:inset 2px 2px 0 #5a3a22,inset -2px -2px 0 #120805;cursor:pointer}
+.su-bar button{flex:1;padding:10px 4px;font:inherit;font-size:9px;font-weight:700;letter-spacing:.03em;color:#ffe9b8;background:#2a1a10;border:3px solid #250f05;box-shadow:inset 2px 2px 0 #5a3a22,inset -2px -2px 0 #120805;cursor:pointer}
 .su-bar button.on{color:#2a1600;background:linear-gradient(#ffd98a,#f0892a);box-shadow:inset 2px 2px 0 #ffe9b8,inset -2px -2px 0 #c0651a}
-.su-panel{display:flex;flex-direction:column;gap:9px;width:100%;max-width:420px;margin:0 auto;padding:14px 12px;color:#ffedcd;background:linear-gradient(180deg,#2a1c14ee,#1a110cee);border:3px solid #250f05;box-shadow:inset 2px 2px 0 #6b4429,inset -2px -2px 0 #120805}
+.su-bar button:disabled,.su-bar button.locked{opacity:.35;cursor:not-allowed;filter:grayscale(.6)}
+.su-panel{display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px;margin:0 auto 8px;padding:12px 10px;color:#ffedcd;background:linear-gradient(180deg,#2a1c14ee,#1a110cee);border:3px solid #250f05;box-shadow:inset 2px 2px 0 #6b4429,inset -2px -2px 0 #120805}
 .su-bal{font-size:10px;text-align:right;opacity:.9}
 .su-l{font-size:9px;letter-spacing:.06em;color:#ffd28d}
 .su-row{display:flex;gap:6px;align-items:center}
-.su-row input{flex:1;min-width:0;padding:9px 8px;font:inherit;font-size:13px;color:#ffedcd;background:#120a06;border:2px solid #5a3a22;border-radius:0;text-align:center}
+.su-row input{flex:1;min-width:0;padding:9px 8px;font:inherit;font-size:13px;color:#ffedcd;background:#120a06;border:2px solid #5a3a22;text-align:center}
 .su-row button{flex:0 0 auto;padding:9px 8px;font:inherit;font-size:10px;font-weight:700;color:#ffe9b8;background:#3a2517;border:2px solid #250f05;cursor:pointer}
 .su-row button.on{color:#2a1600;background:linear-gradient(#ffd98a,#f0892a)}
 .su-mults button{flex:1}
@@ -1602,21 +1604,37 @@ function css(){
 .su-hint{font-size:9px;line-height:1.5;color:#cdbfe6;text-align:center}
 .su-go{padding:14px 10px;font:inherit;font-size:13px;font-weight:700;letter-spacing:.05em;color:#2a1600;background:linear-gradient(#ffd98a,#f0892a);border:3px solid #250f05;box-shadow:inset 2px 2px 0 #ffe9b8,inset -2px -2px 0 #c0651a,0 3px 0 #250f05;cursor:pointer}
 .su-go:disabled{opacity:.55;cursor:default}
-.su-go:active:not(:disabled){transform:translateY(2px)}
 .su-res{margin:0;min-height:1.4em;text-align:center;font-size:12px;font-weight:700}
-.su-res.win{color:#8dff9d}.su-res.lose{color:#ff9a8d}.su-res.info{color:#ffd28d}`;
+.su-res.win{color:#8dff9d}.su-res.lose{color:#ff9a8d}.su-res.info{color:#ffd28d}
+#view-upgrade.su-stars #spinBtn{opacity:.35;pointer-events:none}
+#view-upgrade.su-locked #spinBtn{opacity:.35;pointer-events:none}
+`;
   document.head.appendChild(s);
+}
+
+function setCenter(kind){
+  const hat=document.getElementById('centerHat');
+  const hq=document.getElementById('hatQuestion');
+  if(!hat)return;
+  if(kind==='stars'){
+    hat.hidden=false;hat.classList.add('is-gift');hat.src=STAR_IMG;if(hq)hq.hidden=true;
+  }else if(kind==='hat'){
+    hat.hidden=false;hat.classList.remove('is-gift');hat.src=HAT_IMG;if(hq)hq.hidden=true;
+  }else{
+    /* gifts — шляпа по умолчанию, можно сменить кликом */
+    hat.hidden=false;hat.classList.remove('is-gift');hat.src=HAT_IMG;if(hq)hq.hidden=false;
+  }
 }
 
 function build(){
   host=q('#view-upgrade');if(!host||q('#suPanel'))return !!host;
   css();
-  bar=document.createElement('div');bar.className='su-bar su-keep';bar.hidden=true;
-  bar.innerHTML='<button type="button" data-m="nft">🎁 ПОДАРКИ</button><button type="button" data-m="stars">★ ЗВЁЗДЫ</button>';
-  panel=document.createElement('div');panel.id='suPanel';panel.className='su-panel su-keep';panel.hidden=true;
+  bar=document.createElement('div');bar.className='su-bar';bar.hidden=true;
+  bar.innerHTML='<button type="button" data-m="hat">🎩 ШЛЯПА</button><button type="button" data-m="gifts">🎁 ПОДАРКИ</button><button type="button" data-m="stars">★ ЗВЁЗДЫ</button>';
+  panel=document.createElement('div');panel.id='suPanel';panel.className='su-panel';panel.hidden=true;
   panel.innerHTML=`
 <div class="su-bal">Баланс: <b id="suBal">0</b> ★</div>
-<div class="su-l">СТАВКА, ★ (выигрыш за раз до 250 000 ★)</div>
+<div class="su-l">СТАВКА ★ · выигрыш за раз до 250 000 ★</div>
 <div class="su-row"><input id="suAmt" type="number" inputmode="decimal" min="1" step="1" value="100" aria-label="Ставка"><button type="button" data-qa="min">МИН</button><button type="button" data-qa="half">½</button><button type="button" data-qa="dbl">×2</button><button type="button" data-qa="max">МАКС</button></div>
 <div class="su-l">МНОЖИТЕЛЬ</div>
 <div class="su-row su-mults"><button type="button" data-x="2">x2</button><button type="button" data-x="5">x5</button><button type="button" data-x="10">x10</button><button type="button" data-x="15">x15</button></div>
@@ -1626,7 +1644,10 @@ function build(){
 <button class="su-go" id="suGo" type="button">★ УЛУЧШИТЬ</button>
 <p class="su-res" id="suRes"></p>`;
   host.prepend(panel);host.prepend(bar);
-  bar.addEventListener('click',e=>{const b=e.target.closest('button[data-m]');if(b)setMode(b.dataset.m)});
+  bar.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-m]');if(!b||b.disabled)return;
+    setMode(b.dataset.m);
+  });
   const amt=q('#suAmt',panel),mul=q('#suMult',panel);
   amt.addEventListener('input',()=>{const mb=maxBet();let v=parseFloat(amt.value);if(v>mb)amt.value=String(mb);update()});
   mul.addEventListener('input',()=>{const L=LIM();let v=parseFloat(mul.value);if(v>L.max_mult)mul.value=String(L.max_mult);update()});
@@ -1650,36 +1671,55 @@ function update(){
   if(!panel)return;
   const L=LIM(),m=readMult(),a=readAmt();
   const ae=q('#suAmt',panel);if(parseFloat(ae.value)>maxBet())ae.value=String(maxBet());
-  q('#suHint',panel).textContent='Макс. ставка при x'+fmt(m)+': '+fmt(maxBet())+' ★ · выигрыш за раз до '+fmt(L.max)+' ★';
+  q('#suHint',panel).textContent='Макс. ставка при x'+fmt(m)+': '+fmt(maxBet())+' ★ · выигрыш до '+fmt(L.max)+' ★';
   const ch=Math.min(1,(1-L.edge)/m)*100;
   q('#suChance',panel).textContent=ch.toFixed(2)+'%';
   q('#suWin',panel).textContent=fmt(Math.round(a*m*100)/100);
   q('#suBal',panel).textContent=fmt(Math.round(bal*100)/100);
   panel.querySelectorAll('button[data-x]').forEach(b=>b.classList.toggle('on',Math.abs(+b.dataset.x-m)<1e-9));
+  if(mode==='stars')setCenter('stars');
 }
 function say(t,cls){const r=q('#suRes',panel);r.textContent=t||'';r.className='su-res'+(cls?' '+cls:'')}
 
 function setMode(m){
+  const M=MODES();
+  const nftOn=M.nft!==false, starsOn=M.stars!==false;
+  if((m==='hat'||m==='gifts')&&!nftOn)return;
+  if(m==='stars'&&!starsOn)return;
   mode=m;
   host.classList.toggle('su-stars',m==='stars');
+  host.classList.toggle('su-locked',!nftOn&&!starsOn);
   panel.hidden=m!=='stars';
-  bar.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+  bar.querySelectorAll('button[data-m]').forEach(b=>{
+    b.classList.toggle('on',b.dataset.m===m);
+  });
+  setCenter(m==='stars'?'stars':m==='gifts'?'gifts':'hat');
   if(m==='stars')update();
 }
 function applyModes(){
-  if(!host||!panel)return;
+  if(!host||!panel||!bar)return;
   const M=MODES();
-  const nft=M.nft!==false,stars=M.stars!==false;
-  bar.hidden=!(nft&&stars);
-  bar.querySelector('[data-m="nft"]').hidden=!nft;
-  bar.querySelector('[data-m="stars"]').hidden=!stars;
+  const nftOn=M.nft!==false, starsOn=M.stars!==false;
+  bar.hidden=false;
+  const bHat=bar.querySelector('[data-m="hat"]');
+  const bGif=bar.querySelector('[data-m="gifts"]');
+  const bSta=bar.querySelector('[data-m="stars"]');
+  /* заблокировать кнопки, если режим выключен */
+  [bHat,bGif].forEach(b=>{if(!b)return;b.disabled=!nftOn;b.classList.toggle('locked',!nftOn);b.title=nftOn?'':'Апгрейд на подарки закрыт'});
+  if(bSta){bSta.disabled=!starsOn;bSta.classList.toggle('locked',!starsOn);bSta.title=starsOn?'':'Апгрейд звёзд закрыт'}
   const go=q('#suGo',panel);
-  if(!nft&&!stars){setMode('stars');go.disabled=true;say('Апгрейд временно закрыт','info');return}
+  if(!nftOn&&!starsOn){
+    setMode('stars');go.disabled=true;say('Апгрейд временно закрыт','info');
+    host.classList.add('su-locked');return;
+  }
   go.disabled=busy;
-  if(!nft&&mode!=='stars')setMode('stars');
-  else if(!stars&&mode!=='nft')setMode('nft');
+  host.classList.remove('su-locked');
+  /* авто: если текущий режим закрыт — переключить на доступный */
+  if((mode==='hat'||mode==='gifts')&&!nftOn&&starsOn)setMode('stars');
+  else if(mode==='stars'&&!starsOn&&nftOn)setMode('hat');
+  else if(mode!=='hat'&&mode!=='gifts'&&mode!=='stars')setMode(nftOn?'hat':'stars');
   else setMode(mode);
-  if(!(!nft&&!stars)&&q('#suRes',panel).textContent==='Апгрейд временно закрыт')say('');
+  if(!(!nftOn&&!starsOn)&&q('#suRes',panel).textContent==='Апгрейд временно закрыт')say('');
 }
 async function refresh(){
   if(typeof api!=='function')return;
@@ -1696,6 +1736,7 @@ const errText=e=>{
 };
 async function go(){
   if(busy||typeof api!=='function')return;
+  if(MODES().stars===false){say('Апгрейд звёзд закрыт','info');return}
   const a=readAmt(),m=readMult();
   q('#suAmt',panel).value=String(a);q('#suMult',panel).value=String(m);update();
   if(a>bal){say('Не хватает ★ на балансе','lose');return}
@@ -1716,3 +1757,77 @@ function init(){
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();}catch(e){console.error("[app.js] stars-upgrade",e)}
+
+
+
+
+/* ===== Топ: вкладки оборот / депы / выигрыши / участники ===== */
+try{(()=>{
+'use strict';
+const q=(s,r=document)=>r.querySelector(s);
+let mode='turnover';
+const MODES=[
+  ['turnover','Оборот'],
+  ['deposits','Депы'],
+  ['wins','Выигрыши'],
+  ['players','Участники'],
+];
+function ensureBar(){
+  const host=q('#view-leaders');if(!host||q('#lbModeBar'))return host;
+  if(!q('#lbModeCss')){
+    const st=document.createElement('style');st.id='lbModeCss';
+    st.textContent=`#lbModeBar{display:flex;flex-wrap:wrap;gap:6px;width:100%;max-width:440px;margin:4px auto 10px;padding:0 8px;box-sizing:border-box}
+#lbModeBar button{flex:1 1 40%;min-width:0;padding:9px 6px;font:inherit;font-size:9px;font-weight:700;letter-spacing:.03em;color:#ffe9b8;background:#2a1a10;border:3px solid #250f05;box-shadow:inset 2px 2px 0 #5a3a22,inset -2px -2px 0 #120805;cursor:pointer}
+#lbModeBar button.on{color:#2a1600;background:linear-gradient(#ffd98a,#f0892a);box-shadow:inset 2px 2px 0 #ffe9b8,inset -2px -2px 0 #c0651a}`;
+    document.head.appendChild(st);
+  }
+  const bar=document.createElement('div');bar.id='lbModeBar';
+  bar.innerHTML=MODES.map(([k,t])=>`<button type="button" data-m="${k}">${t}</button>`).join('');
+  const sub=q('#lbSubAll',host);
+  if(sub)sub.after(bar);else host.prepend(bar);
+  bar.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-m]');if(!b)return;
+    mode=b.dataset.m;paint();reload(true);
+  });
+  return host;
+}
+function paint(){
+  const bar=q('#lbModeBar');if(!bar)return;
+  bar.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+  const sub=q('#lbSubAll');
+  if(sub){
+    sub.hidden=false;
+    const map={turnover:'по обороту за всё время',deposits:'по депозитам за всё время',wins:'по выигрышам за всё время',players:'по числу игр (участники)'};
+    sub.textContent=map[mode]||map.turnover;
+  }
+}
+async function reload(force){
+  if(typeof window.loadLeaderboard==='function'){
+    /* подмена api на один вызов с mode — через monkeypatch window.__lbMode */
+    window.__lbMode=mode;
+    try{await window.loadLeaderboard(!!force)}catch(_){}
+  }else if(typeof api==='function'&&typeof window.renderLeaderboard==='function'){
+    try{
+      const data=await api('/api/leaderboard',{mode});
+      window.renderLeaderboard(data);
+    }catch(_){}
+  }
+}
+/* патч api: если path leaderboard — докидываем mode */
+const _api=typeof api==='function'?api:null;
+if(_api){
+  window.api=async function(path,body){
+    if(String(path).includes('/api/leaderboard')){
+      body=Object.assign({},body||{},{mode:window.__lbMode||mode});
+    }
+    return _api(path,body);
+  };
+}
+function init(){
+  if(!ensureBar())return setTimeout(init,400);
+  paint();
+  const host=q('#view-leaders');
+  if(host)new MutationObserver(()=>{if(!host.hidden){paint();reload(true)}}).observe(host,{attributes:true,attributeFilter:['hidden']});
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();}catch(e){console.error('[app.js] leaderboard-tabs',e)}
