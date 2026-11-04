@@ -219,6 +219,65 @@ def best_drop(uid):
         "image": r["image"] or "",
     }
 
+def leaderboard(mode="turnover", limit=50):
+    """mode: turnover | deposits | wins | players. Возвращает list[{user_id, username, score}]."""
+    limit = max(1, min(100, int(limit)))
+    mode = (mode or "turnover").lower()
+    with connect() as c:
+        if mode == "deposits":
+            rows = c.execute(
+                """SELECT d.user_id AS user_id, COALESCE(u.username,'') AS username, COALESCE(SUM(d.amount),0) AS score
+                   FROM deposits d LEFT JOIN users u ON u.id=d.user_id
+                   WHERE d.status='credited'
+                   GROUP BY d.user_id
+                   HAVING score > 0
+                   ORDER BY score DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        elif mode == "wins":
+            rows = c.execute(
+                """SELECT s.user_id AS user_id, COALESCE(u.username,'') AS username, COALESCE(SUM(s.payout),0) AS score
+                   FROM spin_log s LEFT JOIN users u ON u.id=s.user_id
+                   WHERE s.win=1 AND COALESCE(s.payout,0) > 0
+                   GROUP BY s.user_id
+                   ORDER BY score DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        elif mode == "players":
+            rows = c.execute(
+                """SELECT s.user_id AS user_id, COALESCE(u.username,'') AS username, COUNT(*) AS score
+                   FROM spin_log s LEFT JOIN users u ON u.id=s.user_id
+                   GROUP BY s.user_id
+                   ORDER BY score DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        else:  # turnover
+            rows = c.execute(
+                """SELECT u.id AS user_id, COALESCE(u.username,'') AS username, COALESCE(s.turnover_ton,0) AS score
+                   FROM users u LEFT JOIN user_stats s ON s.user_id=u.id
+                   WHERE COALESCE(s.turnover_ton,0) > 0
+                   ORDER BY score DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+    return [{"user_id": int(r["user_id"]), "username": (r["username"] or "").lstrip("@"), "score": float(r["score"] or 0)} for r in rows]
+
+def leaderboard_score(uid, mode="turnover"):
+    """Счёт одного игрока для 'me' в топе."""
+    uid = int(uid)
+    mode = (mode or "turnover").lower()
+    with connect() as c:
+        if mode == "deposits":
+            r = c.execute("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE user_id=? AND status='credited'", (uid,)).fetchone()
+            return float(r["s"] or 0)
+        if mode == "wins":
+            r = c.execute("SELECT COALESCE(SUM(payout),0) s FROM spin_log WHERE user_id=? AND win=1", (uid,)).fetchone()
+            return float(r["s"] or 0)
+        if mode == "players":
+            r = c.execute("SELECT COUNT(*) s FROM spin_log WHERE user_id=?", (uid,)).fetchone()
+            return float(r["s"] or 0)
+        r = c.execute("SELECT COALESCE(turnover_ton,0) s FROM user_stats WHERE user_id=?", (uid,)).fetchone()
+        return float(r["s"] if r else 0)
+
 def count_games(uid):
     with connect() as c:
         n = c.execute("SELECT COUNT(*) FROM spin_log WHERE user_id=?", (uid,)).fetchone()[0]
