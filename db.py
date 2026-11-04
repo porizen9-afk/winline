@@ -104,14 +104,25 @@ def is_admin(uid):
     with connect() as c:
         return bool(c.execute("SELECT 1 FROM admins WHERE user_id=?", (uid,)).fetchone())
 
+_SET_CACHE = {}          # key -> (время, значение|None); настройки читаются десятки раз за запрос — не открываем БД каждый раз
+_SET_TTL = 3.0
+
 def get_setting(key, default=""):
-    with connect() as c:
-        r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    return r["value"] if r else default
+    now = time.time()
+    hit = _SET_CACHE.get(key)
+    if hit is not None and now - hit[0] < _SET_TTL:
+        raw = hit[1]
+    else:
+        with connect() as c:
+            r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        raw = r["value"] if r else None
+        _SET_CACHE[key] = (now, raw)
+    return raw if raw is not None else default
 
 def set_setting(key, value):
     with connect() as c:
         c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    _SET_CACHE.pop(key, None)
 
 def get_coins(uid):
     ensure_user(uid)
