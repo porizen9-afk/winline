@@ -1200,6 +1200,16 @@ if (ASSETS / "img").is_dir():
 # админ-бот и юзербот (bots.py) стартуют вместе с сервером — отдельные процессы не нужны
 @app.on_event("startup")
 async def _start_bots():
+    found = False
+    for base in (STATIC, ASSETS, ROOT):
+        p = base / "index.html"
+        if p.is_file():
+            print("index.html:", p)
+            found = True
+            break
+    if not found:
+        print("WARNING: index.html не найден — мини-апп не откроется")
+    print("WEBAPP_URL=", os.getenv("WEBAPP_URL") or os.getenv("MINIAPP_URL") or "(пусто)")
     try:
         seed_catalog()
     except Exception as e:
