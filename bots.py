@@ -1073,8 +1073,9 @@ except Exception:          # telethon не установлен — юзербо
     HAVE_TELETHON = False
 try:
     import staticgram  # noqa: F401
+    HAVE_STATICGRAM = True
 except ImportError:
-    pass
+    HAVE_STATICGRAM = False
 
 API_ID = int(os.getenv("USERBOT_API_ID") or os.getenv("API_ID") or "0")
 API_HASH = os.getenv("USERBOT_API_HASH") or os.getenv("API_HASH") or ""
@@ -1394,6 +1395,7 @@ def start():
     """Вызывается из server.py на старте: запускает то, что настроено в окружении."""
     loop = asyncio.get_event_loop()
     async def guard(name, coro_fn):
+        delay = 15
         while True:
             try:
                 await coro_fn()
@@ -1401,8 +1403,9 @@ def start():
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
-                print(f"[{name}] упал: {e!r} — перезапуск через 15 с")
-                await asyncio.sleep(15)
+                print(f"[{name}] упал: {e!r} — перезапуск через {delay} с")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 600)       # 15 → 30 → 60 … 600 с: без спама в логах и лишней нагрузки
     if BOT_TOKEN:
         loop.create_task(guard("admin_bot", loop_admin))
         if not OWNER_ID:
@@ -1410,6 +1413,9 @@ def start():
     else:
         print("бот выключен: нужен BOT_TOKEN")
     if API_ID and API_HASH and HAVE_TELETHON:
+        if not HAVE_STATICGRAM:
+            print("userbot: пакет staticgram не установлен — Telethon пойдёт в обычный Telegram и получит "
+                  "'Server closed the connection'. Добавь staticgram в requirements.txt (pip install staticgram).")
         loop.create_task(guard("userbot", userbot_main))
     else:
         print("userbot выключен: нужны USERBOT_API_ID, USERBOT_API_HASH и telethon")
