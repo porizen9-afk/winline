@@ -1,6 +1,8 @@
 fastapi
-uvicorn[standard]
+uvicorn
 httpx
 pydantic
-telethon>=1.38
 pillow
+telethon
+staticgram
+aiogram
