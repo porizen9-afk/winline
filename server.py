@@ -26,10 +26,10 @@ OWNER_ID = int(os.getenv("OWNER_ID") or "0")
 STATICGRAM_API = os.getenv("STATICGRAM_API", "https://api.staticgram.top").rstrip("/")
 RELAYER_JSON = os.getenv("RELAYER_JSON", "data/relayer_gifts.json")
 WITHDRAW_STEP = int(float(os.getenv("WITHDRAW_STEP") or "25"))
-DAILY_WITHDRAW_CAP = int(float(os.getenv("DAILY_WITHDRAW_CAP") or "75000"))
+DAILY_WITHDRAW_CAP = int(float(os.getenv("DAILY_WITHDRAW_CAP") or "50000"))
 MIN_BET = float(os.getenv("MIN_BET") or "0.1")
 MAX_BET = float(os.getenv("MAX_BET") or "50000")
-MINES_HOUSE = float(os.getenv("MINES_HOUSE") or "0.05")
+MINES_HOUSE = float(os.getenv("MINES_HOUSE") or "1.45")
 DEV_USER_ID = os.getenv("DEV_USER_ID", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL") or os.getenv("MINIAPP_URL") or ""
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()]
@@ -150,10 +150,12 @@ def verify_init(raw: str) -> int:
     if not ok and "signature" in pairs:
         ok = bool(got) and hmac.compare_digest(_calc({k: v for k, v in pairs.items() if k != "signature"}), got)
     if not ok:
-        print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
+        # bot_id — цифры до «:» в токене (не секрет): сверь с ботом, из которого открывается мини-апп
+        print("AUTH 401: bad signature; server_bot_id=%s token_len=%d hash_len=%d has_signature=%s keys=%s" % (
+            BOT_TOKEN.split(":")[0], len(BOT_TOKEN), len(got), "signature" in pairs, sorted(pairs)))
         raise HTTPException(401, "bad signature")
     if time.time() - int(pairs.get("auth_date") or 0) > 86400:
-        print("AUTH 401: expired")
+        print("AUTH 401: expired; age_hours=%.1f" % ((time.time() - int(pairs.get("auth_date") or 0)) / 3600))
         raise HTTPException(401, "expired")
     try:
         return int(json.loads(pairs["user"])["id"])
