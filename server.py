@@ -125,19 +125,17 @@ def _ladder() -> dict:
 
 # ---------- auth ----------
 def verify_init(raw: str) -> int:
-    def _fallback(reason: str) -> int:
-        for cand in (DEV_USER_ID, os.getenv("OWNER_ID") or "", "1"):
-            if str(cand).isdigit() and int(cand) > 0:
-                print("AUTH fallback", reason, "->", cand)
-                return int(cand)
-        return 1
-
+    """Проверка подписи Telegram initData. Любая неудача -> 401. Никаких «входов под владельцем»."""
     if not raw:
-        return _fallback("no initData")
+        # DEV_USER_ID — только для локальной отладки без Telegram (в проде переменную не задавать!)
+        if DEV_USER_ID.isdigit() and int(DEV_USER_ID) > 0:
+            return int(DEV_USER_ID)
+        print("AUTH 401: initData пустой (открыто не из бота?)")
+        raise HTTPException(401, "no initData")
     if raw.lower().startswith("tma "):
         raw = raw[4:].strip()
     if not BOT_TOKEN:
-        return _fallback("BOT_TOKEN empty")
+        raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
     pairs = dict(parse_qsl(raw, keep_blank_values=True))
     got = pairs.pop("hash", "")
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
@@ -146,20 +144,22 @@ def verify_init(raw: str) -> int:
         chk = chr(10).join(f"{k}={p[k]}" for k in sorted(p))
         return hmac.new(secret, chk.encode(), hashlib.sha256).hexdigest()
 
+    # StaticGram (как и Telegram): в data_check_string входят ВСЕ поля кроме hash, включая signature.
+    # На случай старых клиентов пробуем ещё и вариант без signature.
     ok = bool(got) and hmac.compare_digest(_calc(pairs), got)
     if not ok and "signature" in pairs:
         ok = bool(got) and hmac.compare_digest(_calc({k: v for k, v in pairs.items() if k != "signature"}), got)
     if not ok:
         print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
-        return _fallback("bad signature")
+        raise HTTPException(401, "bad signature")
+    if time.time() - int(pairs.get("auth_date") or 0) > 86400:
+        print("AUTH 401: expired")
+        raise HTTPException(401, "expired")
     try:
-        if time.time() - int(pairs.get("auth_date") or 0) > 86400:
-            print("AUTH 401: expired")
-            return _fallback("expired")
         return int(json.loads(pairs["user"])["id"])
     except Exception as e:
-        print("AUTH parse user:", e)
-        return _fallback("bad user")
+        print("AUTH 401: bad user field:", e)
+        raise HTTPException(401, "bad user")
 
 def uid_from(request: Request, x_init: str | None = None) -> int:
     raw = x_init or request.headers.get("x-init-data") or request.headers.get("authorization") or ""
@@ -640,19 +640,7 @@ def maint(request: Request, x_init_data: str | None = Header(None)):
 @app.api_route("/api/state", methods=["GET", "POST"])
 def api_state(request: Request, x_init_data: str | None = Header(None)):
     """Всегда 200 — иначе фронт пишет «Нет связи с сервером» и ломает UI."""
-    try:
-        uid = uid_from(request, x_init_data)
-    except HTTPException as e:
-        print("api/state auth soft:", e.status_code, e.detail)
-        # maintenance / banned — всё равно отдаём каркас, чтобы UI не развалился
-        try:
-            uid = int(DEV_USER_ID or os.getenv("OWNER_ID") or "1")
-        except Exception:
-            uid = 1
-        try:
-            db.ensure_user(uid)
-        except Exception:
-            pass
+    uid = uid_from(request, x_init_data)   # 401 / 403 / 503 отдаём как есть — фронт сам покажет техработы
     try:
         return build_state(uid)
     except Exception as e:
