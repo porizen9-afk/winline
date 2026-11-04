@@ -385,52 +385,104 @@ async def lim_callback(uid: int, chat_id: int, mid, data: str):
 
 
 def _prettify_slug(slug: str) -> str:
+    """PlushPepe-1 -> Plush Pepe (номер подарка в название не попадает)."""
     import re as _r
-    base, _, num = slug.rpartition("-")
-    if not base:
-        base, num = slug, ""
-    base = _r.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base).replace("_", " ").strip()
-    return f"{base} #{num}" if num.isdigit() else base
+    base = _r.sub(r"-\d+$", "", slug)
+    return _r.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base).replace("_", " ").replace("-", " ").strip()
+
+
+def _strip_bg(img):
+    """Убирает фон: сначала rembg (если стоит), иначе заливка от краёв по цвету углов. Возвращает RGBA."""
+    img = img.convert("RGBA")
+    if img.getchannel("A").getextrema()[0] < 250:      # уже с прозрачностью — не трогаем
+        return img
+    try:
+        from rembg import remove
+        return remove(img).convert("RGBA")
+    except Exception:
+        pass
+    from PIL import ImageDraw
+    w, h = img.size
+    rgb = img.convert("RGB")
+    mask = Image.new("L", (w, h), 0)
+    for pt in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)):
+        tmp = rgb.copy()
+        ImageDraw.floodfill(tmp, pt, (255, 0, 255), thresh=48)
+        px = tmp.load()
+        m = mask.load()
+        for y in range(h):
+            for x in range(w):
+                if px[x, y] == (255, 0, 255):
+                    m[x, y] = 255
+    alpha = img.getchannel("A")
+    alpha.paste(0, mask=mask)
+    img.putalpha(alpha)
+    return img
 
 
 async def add_gift_from_link(url: str, price: float, name=None):
-    """Берёт картинку подарка по ссылке (страница t.me/nft/..., StaticGram или прямая ссылка на картинку) и кладёт в каталог."""
+    """Подарок по ссылке (t.me/nft/..., staticgram.top/..., прямая картинка). Картинка без фона, название без номера."""
     import re as _r
     from urllib.parse import urljoin, urlparse
     headers = {"User-Agent": "Mozilla/5.0 (compatible; WinLineBot/1.0)"}
+    path = urlparse(url).path.rstrip("/")
+    m_slug = _r.search(r"([A-Za-z][A-Za-z0-9_]*)-\d+(?:\.\w+)?$", path)
+    base_slug = (m_slug.group(1) if m_slug else (path.split("/")[-1] or "gift")).lower()
+    full_slug = (path.split("/")[-1] or base_slug).split(".")[0].lower()
     img_bytes, title = None, None
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as h:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as h:
+        async def grab(u):
+            try:
+                r = await h.get(u)
+                if r.is_success and r.content and (r.headers.get("content-type") or "").lower().startswith("image/"):
+                    return r.content
+            except Exception:
+                pass
+            return None
+        # 1) прямая картинка
+        page_html = None
+        try:
             r = await h.get(url)
             ctype = (r.headers.get("content-type") or "").lower()
-            if not r.is_success:
-                return False, f"ссылка не открывается (HTTP {r.status_code})"
-            if ctype.startswith("image/"):
+            if r.is_success and ctype.startswith("image/"):
                 img_bytes = r.content
-            else:
-                html = r.text
-                m = _r.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, _r.I) or \
-                    _r.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, _r.I) or \
-                    _r.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)', html, _r.I)
-                t = _r.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, _r.I)
-                title = t.group(1).strip() if t else None
-                if not m:
-                    return False, "на странице нет картинки (og:image)"
-                ir = await h.get(urljoin(url, m.group(1).replace("&amp;", "&")))
-                if not ir.is_success or not ir.content:
-                    return False, f"картинка не скачалась (HTTP {ir.status_code})"
-                img_bytes = ir.content
-    except Exception as e:
-        return False, f"ошибка загрузки: {str(e)[:100]}"
-    tail = urlparse(url).path.rstrip("/").split("/")[-1] or "gift"
-    slug = "lk_" + _r.sub(r"[^a-z0-9]+", "_", tail.lower()).strip("_")[:24]
+            elif r.is_success:
+                page_html = r.text
+        except Exception:
+            pass   # staticgram.top может не отвечать с сервера — это не конец, ниже есть запасные источники
+        # 2) картинка без фона по номеру подарка (если ссылка вида Name-123)
+        if not img_bytes and m_slug:
+            for u in (f"https://nft.fragment.com/gift/{full_slug}.webp",
+                      f"https://nft.fragment.com/gift/{full_slug}.large.jpg"):
+                img_bytes = await grab(u)
+                if img_bytes:
+                    break
+        # 3) og:image со страницы
+        if not img_bytes and page_html:
+            mm = _r.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', page_html, _r.I) or \
+                 _r.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', page_html, _r.I) or \
+                 _r.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)', page_html, _r.I)
+            t = _r.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', page_html, _r.I)
+            title = t.group(1).strip() if t else None
+            if mm:
+                img_bytes = await grab(urljoin(url, mm.group(1).replace("&amp;", "&")))
+    if not img_bytes:
+        return False, "не нашёл картинку по ссылке (страница недоступна или нет og:image)"
+    slug = "lk_" + _r.sub(r"[^a-z0-9]+", "_", base_slug).strip("_")[:24]
     out_dir = Path(os.getenv("GIFTS_IMG_DIR", "data/gifts"))
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        Image.open(io.BytesIO(img_bytes)).convert("RGBA").resize((256, 256)).save(out_dir / f"{slug}.png")
+        im = _strip_bg(Image.open(io.BytesIO(img_bytes)))
+        bbox = im.getbbox()
+        if bbox:
+            im = im.crop(bbox)
+        side = max(im.size)
+        sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+        sq.resize((256, 256)).save(out_dir / f"{slug}.png")
     except Exception:
         return False, "по ссылке не картинка, которую можно открыть"
-    gname = (name or title or _prettify_slug(tail))[:40]
+    gname = _r.sub(r"\s*#\d+\s*$", "", (name or title or _prettify_slug(full_slug))).strip()[:40]
     with dbm.connect() as c:
         c.execute("DELETE FROM catalog_gifts WHERE slug=?", (slug,))
     dbm.catalog_add(slug, gname, f"/static/gifts/{slug}.png?v={int(time.time())}", price, enabled=1)
