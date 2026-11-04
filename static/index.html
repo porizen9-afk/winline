@@ -134,6 +134,7 @@
     return Math.min(94, real + creep);
   };
   function frame() {
+    if (finished) return;
     const tg = maxTg = Math.max(maxTg, target());
     shown += (tg - shown) * (tg >= 100 ? 0.18 : 0.06);
     const p = Math.max(0, Math.min(100, shown));
@@ -155,6 +156,12 @@
   }
   const start = () => { if (!document.body) return setTimeout(start, 20); requestAnimationFrame(frame); };
   start();
+  /* страховка: заставка не висит дольше 4 с, даже если requestAnimationFrame остановился (слабый телефон, WebView) */
+  setTimeout(() => {
+    if (finished) return;
+    finished = true;
+    try { window.Boot.done = true; document.body && document.body.classList.add('booted'); root.classList.add('out'); setTimeout(() => { try { root.remove(); } catch (_) {} }, 650); } catch (_) {}
+  }, 4000);
   window.addEventListener('DOMContentLoaded', () => { if (window.Boot.done) document.body.classList.add('booted'); });
 })();
 </script><script>try{document.documentElement.dataset.optimized=JSON.parse(localStorage.getItem('hatdrop.performance.v1')||'{}').enabled===true?'on':'off'}catch(_){document.documentElement.dataset.optimized='off'}</script>
