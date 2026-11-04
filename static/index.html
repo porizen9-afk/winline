@@ -6522,7 +6522,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       <p class="muted dep-note">Выберите способ пополнения</p>
       <div class="dep-methods">
         <button class="dep-method dep-ton" id="depChooseTon" type="button" data-method="ton">
-          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/ton.png" alt="GRAM" draggable="false"></span>
+          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="GRAM" draggable="false"></span>
           <span class="dep-m-copy"><b>GRAM</b><small>Через TON Connect, зачисление в течение минуты</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
@@ -6532,7 +6532,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
           <span class="dep-m-arrow">›</span>
         </button>
         <button class="dep-method dep-stars" id="depChooseStars" type="button" data-method="stars">
-          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="Stars" draggable="false"></span>
+          <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="Stars" draggable="false"></span>
           <span class="dep-m-copy"><b>Звёзды StaticGram</b><small>Оплата звёздами через бота</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
@@ -6547,7 +6547,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepTon" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/ton.png" alt="" draggable="false">Пополнение ★</h2>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/images/star-px.png" alt="" draggable="false">Пополнение ★</h2>
       <p class="muted dep-note">Перевод зачислится автоматически в течение минуты.</p>
       <div class="dep-wallet">
         <span class="dep-wallet-addr" id="depWalletAddr">Кошелёк не подключён</span>
@@ -6581,7 +6581,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepStars" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/star.png" alt="" draggable="false">Пополнение звёздами</h2>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/images/star-px.png" alt="" draggable="false">Пополнение звёздами</h2>
       <p class="muted dep-note">Оплата звёздами StaticGram откроется прямо в приложении. Выбери сумму или впиши свою.</p>
       <div class="amount-row">
         <button class="amt" data-amt="1000" data-target="starsAmount">1к</button>
@@ -6590,7 +6590,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       </div>
       <input type="number" id="starsAmount" min="1" step="1" value="1000" inputmode="numeric" aria-label="Сумма пополнения, ★"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
       <div class="dep-quote"><span id="starsRate">1 ★ = 100 Stars</span><b id="starsQuote">—</b></div>
-      <div class="dep-lock"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="" draggable="false"><div><b id="starsLockTitle">Вывод подарков заблокирован на 21 день</b><small>После оплаты Stars вывод призов временно недоступен — дата появится после оплаты.</small></div></div>
+      <div class="dep-lock"><img loading="lazy" decoding="async" src="/images/star-px.png" alt="" draggable="false"><div><b id="starsLockTitle">Вывод подарков заблокирован на 21 день</b><small>После оплаты Stars вывод призов временно недоступен — дата появится после оплаты.</small></div></div>
       <button class="cta dep-stars-pay" id="starsPayBtn" type="button">Оплатить Stars</button>
       <p class="dep-status" id="starsStatus" hidden=""></p>
     </div>
@@ -11327,7 +11327,7 @@ function syncKostyanBanner() {
   const root=document.documentElement,theme=activeEventKey();
   const sky=root.dataset.sky==='night'?'night':'day',curtains=root.dataset.hallCurtains==='closed'?'closed':'open';
   const hall=sky==='day'&&curtains==='open'?'/static/hall/shop.png?v=1':`/static/hall/shop-${sky}-${curtains}.png?v=1`;
-  const want=theme==='hall'?hall:theme==='basement'?'/static/basement/shop.png?v=1':theme==='halloween'?'/img/kostyan-halloween.png?v=1':'/img/kostyan-meadow.png?v=1';
+  const want=theme==='hall'?hall:theme==='basement'?'/static/basement/shop.png?v=1':theme==='halloween'?'/images/kostyan-halloween.png?v=1':'/img/kostyan-meadow.png?v=1';
   if(img.dataset.requested===want)return;
   img.dataset.requested=want;
   if(img.getAttribute('src')===want)return;
