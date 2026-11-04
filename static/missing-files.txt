@@ -1,0 +1,25 @@
+Файлы, на которые ссылается приложение, но которых нет в проекте (23):
+
+static/basement/nav-left-v2.svg
+static/basement/nav-middle-v2.svg
+static/basement/nav-right-v2.svg
+static/hall/audio/effects/hall-spin-fast.mp3
+static/hall/ui/button-active.png
+static/hall/ui/panel-center.png
+static/hall/ui/panel-left.png
+static/hall/ui/panel-right.png
+static/hall/ui/plaque.png
+static/hall/ui/teal-leather.png
+static/hall/ui/window.png
+static/halloween/sky-button.svg
+static/halloween/ui/plate-orange.svg
+static/images/hatcoin.webp
+static/materials/brushed-metal.svg
+static/materials/granite-panel.png
+static/materials/metal-panel.png
+static/materials/oak-panel.png
+static/materials/oak.svg
+static/streamer/iskra.png
+static/ui/cobweb-corner.svg
+static/ui/halloween-granite.webp
+static/ui/meadow-nav-foliage-mask.svg
