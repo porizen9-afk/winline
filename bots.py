@@ -146,12 +146,13 @@ def main_menu_kb() -> dict:
     return kb(
         [
             [("🔍 Игрок", "u:ask"), ("🏆 Топ", "top")],
-            [("🎁 Подарки апгрейда", "ug:list:0")],
+            [("🎁 Подарки апгрейда", "ug:list:0"), ("⚙️ Лимиты", "lim:list")],
             [("📦 Склад", "stock"), ("📋 Очередь", "queue")],
             [("⭐ Выдать ★", "gs:ask"), ("⭐ Забрать ★", "ts:ask")],
             [("🎁 Выдать гифт", "gg:ask"), ("🗑 Забрать гифт", "tg:ask")],
             [("⛔ Бан", "ban:ask"), ("✅ Разбан", "unban:ask")],
-            [("🛠 Техперерыв", "maint:toggle"), ("📊 Стата", "stats")],
+            [("🛠 Техперерыв", "maint:toggle"), ("✏️ Текст техперерыва", "maint:text")],
+            [("📊 Стата", "stats")],
             [("👤 Выдать админку", "ga:ask"), ("👤 Снять админку", "ra:ask")],
         ]
     )
@@ -347,6 +348,95 @@ async def on_photo(chat_id: int, uid: int, msg: dict):
     await send(chat_id, f"✅ Подарок <b>{name}</b> ({price:g}★) добавлен в апгрейд.\n«🎁 Подарки апгрейда» → там можно выключить или изменить цену.")
 
 
+def lim_view():
+    rows, lines = [], ["⚙️ <b>Лимиты и настройки</b>", "Нажми на пункт, чтобы изменить значение.\n"]
+    for key, (label, env, default) in dbm.LIMITS.items():
+        val = dbm.limit(key)
+        lines.append(f"• {label}: <b>{val:g}</b>")
+        rows.append([(f"{label}: {val:g}", f"lim:e:{key}")])
+    rows.append([("« Меню", "menu")])
+    return "\n".join(lines), kb(rows)
+
+
+async def lim_callback(uid: int, chat_id: int, mid, data: str):
+    parts = data.split(":")
+    act = parts[1] if len(parts) > 1 else ""
+    if act == "list":
+        STATE[uid]["mode"] = None
+        text, markup = lim_view()
+        await patch(uid, text, markup)
+        return
+    key = parts[2] if len(parts) > 2 else ""
+    if key not in dbm.LIMITS:
+        return
+    if act == "e":
+        STATE[uid]["mode"] = "lim_set"
+        STATE[uid]["lim_key"] = key
+        label, env, default = dbm.LIMITS[key]
+        await patch(uid, f"✏️ <b>{label}</b>\nСейчас: <b>{dbm.limit(key):g}</b> (по умолчанию {float(default):g})\n\nПришли новое число:",
+                    kb([[("↩️ Вернуть по умолчанию", f"lim:r:{key}")], [("« Отмена", "lim:list")]]))
+        return
+    if act == "r":
+        dbm.set_setting(key, "")
+        STATE[uid]["mode"] = None
+        text, markup = lim_view()
+        await patch(uid, "↩️ Возвращено значение по умолчанию.\n\n" + text, markup)
+        return
+
+
+def _prettify_slug(slug: str) -> str:
+    import re as _r
+    base, _, num = slug.rpartition("-")
+    if not base:
+        base, num = slug, ""
+    base = _r.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", base).replace("_", " ").strip()
+    return f"{base} #{num}" if num.isdigit() else base
+
+
+async def add_gift_from_link(url: str, price: float, name=None):
+    """Берёт картинку подарка по ссылке (страница t.me/nft/..., StaticGram или прямая ссылка на картинку) и кладёт в каталог."""
+    import re as _r
+    from urllib.parse import urljoin, urlparse
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; WinLineBot/1.0)"}
+    img_bytes, title = None, None
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=headers) as h:
+            r = await h.get(url)
+            ctype = (r.headers.get("content-type") or "").lower()
+            if not r.is_success:
+                return False, f"ссылка не открывается (HTTP {r.status_code})"
+            if ctype.startswith("image/"):
+                img_bytes = r.content
+            else:
+                html = r.text
+                m = _r.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html, _r.I) or \
+                    _r.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, _r.I) or \
+                    _r.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)', html, _r.I)
+                t = _r.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, _r.I)
+                title = t.group(1).strip() if t else None
+                if not m:
+                    return False, "на странице нет картинки (og:image)"
+                ir = await h.get(urljoin(url, m.group(1).replace("&amp;", "&")))
+                if not ir.is_success or not ir.content:
+                    return False, f"картинка не скачалась (HTTP {ir.status_code})"
+                img_bytes = ir.content
+    except Exception as e:
+        return False, f"ошибка загрузки: {str(e)[:100]}"
+    tail = urlparse(url).path.rstrip("/").split("/")[-1] or "gift"
+    slug = "lk_" + _r.sub(r"[^a-z0-9]+", "_", tail.lower()).strip("_")[:24]
+    out_dir = Path(os.getenv("GIFTS_IMG_DIR", "data/gifts"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        Image.open(io.BytesIO(img_bytes)).convert("RGBA").resize((256, 256)).save(out_dir / f"{slug}.png")
+    except Exception:
+        return False, "по ссылке не картинка, которую можно открыть"
+    gname = (name or title or _prettify_slug(tail))[:40]
+    with dbm.connect() as c:
+        c.execute("DELETE FROM catalog_gifts WHERE slug=?", (slug,))
+    dbm.catalog_add(slug, gname, f"/static/gifts/{slug}.png?v={int(time.time())}", price, enabled=1)
+    return True, gname
+
+
 def ug_view(page: int):
     items = dbm.catalog_list()
     pages = max(1, (len(items) + UG_PAGE - 1) // UG_PAGE)
@@ -369,6 +459,7 @@ def ug_view(page: int):
     if nav:
         rows.append(nav)
     fee = dbm.get_setting("gift_withdraw_fee", os.getenv("GIFT_WITHDRAW_FEE", "5"))
+    rows.append([("🔗 Подарок по ссылке", "ug:link")])
     rows.append([("📥 Импорт подарков StaticGram", "ug:imp")])
     rows.append([(f"💸 Комиссия вывода подарка: {fee}★", "ug:fee")])
     rows.append([("« Меню", "menu")])
@@ -475,6 +566,17 @@ async def on_callback(cq: dict):
         await show_menu(chat_id, mid, uid)
         return
 
+    if data == "maint:text":
+        STATE[uid]["mode"] = "maint_text"
+        cur = dbm.get_setting("maintenance_text", "") or "Сервис на технических работах. Скоро вернёмся."
+        await patch(uid, f"✏️ Текст, который видят игроки во время техперерыва.\nСейчас:\n<i>{cur}</i>\n\nПришли новый текст (или <code>-</code>, чтобы вернуть стандартный):",
+                    kb([[("« Меню", "menu")]]))
+        return
+
+    if data.startswith("lim:"):
+        await lim_callback(uid, chat_id, mid, data)
+        return
+
     if data == "maint:toggle":
         if not (is_owner(uid) or is_admin(uid)):
             await patch(uid, "Нельзя")
@@ -539,6 +641,15 @@ async def on_callback(cq: dict):
             f"Техперерыв: {'ВКЛ' if maintenance_on() else 'выкл'}",
             back_kb(),
         )
+        return
+
+    if data == "ug:link":
+        STATE[uid]["mode"] = "ug_link"
+        await patch(uid, "🔗 <b>Подарок по ссылке</b>\nПришли ссылку на подарок и цену через пробел, например:\n"
+                    "<code>https://t.me/nft/PlushPepe-1 120</code>\n"
+                    "Можно добавить своё название в конце: <code>… 120 Плюш Пепе</code>.\n"
+                    "Я возьму картинку со страницы ссылки и добавлю подарок в апгрейд.",
+                    kb([[("« Отмена", "ug:list:0")]]))
         return
 
     # ---- подарки апгрейда: вкл/выкл и цена ----
@@ -621,6 +732,14 @@ async def on_text(chat_id: int, uid: int, text: str):
 
     # /start — только приветствие и кнопка игры (без спама админкой на каждый чих)
     if cmd == "/start" or t.startswith("/start"):
+        parts = t.split()
+        if len(parts) > 1 and parts[1].startswith("ref") and parts[1][3:].isdigit():
+            try:                                       # пришёл по реферальной ссылке бота
+                dbm.ensure_user(uid)
+                if dbm.ref_of(uid) is None and dbm.turnover(uid) == 0:
+                    dbm.ref_attach(uid, int(parts[1][3:]))
+            except Exception as e:
+                print("ref attach error", e)
         extra = "Админ-панель: /admin" if is_admin(uid) else ""
         await send_app(chat_id, extra)
         return
@@ -679,6 +798,50 @@ async def on_text(chat_id: int, uid: int, text: str):
         st["mode"] = None
         sign = "+" if mode == "give_stars" else "−"
         await patch(uid, f"{sign}{amount}★ → {target}\n\n" + profile_text(target), back_kb())
+        return
+
+    if mode == "maint_text":
+        dbm.set_setting("maintenance_text", "" if t == "-" else t[:300])
+        st["mode"] = None
+        await patch(uid, "✅ Текст техперерыва сохранён.", kb([[("« Меню", "menu")]]))
+        return
+
+    if mode == "lim_set":
+        key = st.get("lim_key")
+        try:
+            val = float(t.replace(",", ".").replace(" ", ""))
+            if val < 0 or val > 10**9:
+                raise ValueError
+        except ValueError:
+            await patch(uid, "Нужно число, например <code>75000</code>.", kb([[("« Отмена", "lim:list")]]))
+            return
+        dbm.set_limit(key, val)
+        st["mode"] = None
+        text, markup = lim_view()
+        await patch(uid, f"✅ {dbm.LIMITS[key][0]}: <b>{val:g}</b>\n\n" + text, markup)
+        return
+
+    if mode == "ug_link":
+        parts = t.split()
+        if len(parts) < 2 or not parts[0].lower().startswith("http"):
+            await patch(uid, "Формат: <code>ссылка цена [название]</code>, например <code>https://t.me/nft/PlushPepe-1 120</code>",
+                        kb([[("« Отмена", "ug:list:0")]]))
+            return
+        try:
+            price = float(parts[1].replace(",", "."))
+            if not (price > 0):
+                raise ValueError
+        except ValueError:
+            await patch(uid, "Цена должна быть числом больше 0.", kb([[("« Отмена", "ug:list:0")]]))
+            return
+        await patch(uid, "⏳ Загружаю картинку по ссылке…", kb([[("« Отмена", "ug:list:0")]]))
+        ok, info = await add_gift_from_link(parts[0], price, " ".join(parts[2:]).strip() or None)
+        st["mode"] = None
+        if ok:
+            tt, mm = ug_view(0)
+            await patch(uid, f"✅ Подарок <b>{info}</b> добавлен в апгрейд за {price:g}★.\n\n" + tt, mm)
+        else:
+            await patch(uid, f"❌ Не получилось: {info}", kb([[("🔗 Ещё раз", "ug:link")], [("« Подарки", "ug:list:0")]]))
         return
 
     if mode == "ug_fee":
