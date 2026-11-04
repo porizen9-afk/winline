@@ -413,6 +413,10 @@ LIMITS = {   # ключ: (название, переменная окружен�
 }
 
 def limit(key):
+    """Безопасно: неизвестный ключ не валит /api/state (старый db + новый server)."""
+    if key not in LIMITS:
+        print("limit: unknown key", key)
+        return 0.0
     label, env, default = LIMITS[key]
     raw = get_setting(key, "")
     try:
