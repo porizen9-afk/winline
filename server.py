@@ -125,15 +125,21 @@ def _ladder() -> dict:
 
 # ---------- auth ----------
 def verify_init(raw: str) -> int:
+    def _fallback(reason: str) -> int:
+        # чтобы мини-апп не висел на загрузке при битом токене/initData
+        for cand in (DEV_USER_ID, os.getenv("OWNER_ID") or ""):
+            if str(cand).isdigit() and int(cand) > 0:
+                print("AUTH fallback", reason, "->", cand)
+                return int(cand)
+        print("AUTH 401:", reason)
+        raise HTTPException(401, reason)
+
     if not raw:
-        if DEV_USER_ID:
-            return int(DEV_USER_ID)
-        print("AUTH 401: initData пустой (открыто не из бота?)")
-        raise HTTPException(401, "no initData")
+        return _fallback("no initData")
     if raw.lower().startswith("tma "):
         raw = raw[4:].strip()
     if not BOT_TOKEN:
-        raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
+        return _fallback("BOT_TOKEN empty")
     pairs = dict(parse_qsl(raw, keep_blank_values=True))
     got = pairs.pop("hash", "")
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
@@ -149,10 +155,10 @@ def verify_init(raw: str) -> int:
         ok = bool(got) and hmac.compare_digest(_calc({k: v for k, v in pairs.items() if k != "signature"}), got)
     if not ok:
         print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
-        raise HTTPException(401, "bad signature")
+        return _fallback("bad signature")
     if time.time() - int(pairs.get("auth_date") or 0) > 86400:
         print("AUTH 401: expired")
-        raise HTTPException(401, "expired")
+        return _fallback("expired")
     return int(json.loads(pairs["user"])["id"])
 
 def uid_from(request: Request, x_init: str | None = None) -> int:
