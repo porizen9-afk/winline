@@ -1311,9 +1311,29 @@ try{
   function hideOnOtherView() { if (!view.hidden && [...document.querySelectorAll('.view')].some((v) => v !== view && !v.hidden)) view.hidden = true; }
 
   /* ---------- GRAM -> ★ в видимом тексте ---------- */
+  function ensureStarCss() {
+    if (document.getElementById('starIcoCss')) return;
+    const st = document.createElement('style'); st.id = 'starIcoCss';
+    st.textContent = '.star-ico{display:inline-block;width:1em;height:1em;vertical-align:-.14em;background:url(/images/star-px.png) center/contain no-repeat;image-rendering:pixelated}';
+    document.head.appendChild(st);
+  }
   function toStar(root) {
-    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let n; (n = w.nextNode());) if (/\bGRAM\b/.test(n.nodeValue) && !n.parentElement.closest('script,style')) n.nodeValue = n.nodeValue.replace(/\bGRAM\b/g, '★');
+    ensureStarCss();
+    const SKIP = 'script,style,textarea,input,option,title,.star-ico';
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), hits = [];
+    for (let n; (n = w.nextNode());) {
+      const p = n.parentElement; if (!p || p.closest(SKIP)) continue;
+      if (/\bGRAM\b/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/\bGRAM\b/g, '★');
+      if (n.nodeValue.indexOf('★') > -1) hits.push(n);
+    }
+    for (const n of hits) {
+      const f = document.createDocumentFragment();
+      n.nodeValue.split('★').forEach((t, i) => {
+        if (i) { const e = document.createElement('i'); e.className = 'star-ico'; e.setAttribute('role', 'img'); e.setAttribute('aria-label', '★'); f.appendChild(e); }
+        if (t) f.appendChild(document.createTextNode(t));
+      });
+      n.parentNode.replaceChild(f, n);
+    }
   }
 
   function init() {
