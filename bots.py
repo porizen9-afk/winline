@@ -1307,10 +1307,32 @@ async def on_new_gift_notify(client, gift_title: str, from_id: int | None) -> No
 async def userbot_main():
     if not API_ID or not API_HASH:
         return
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    for _d in (OUT.parent, IMG_DIR):
+        try:
+            _d.mkdir(parents=True, exist_ok=True)
+        except OSError as _e:
+            print("userbot: нет записи в", _d, _e)
 
-    client = TelegramClient(SESSION, API_ID, API_HASH)
+    # сессия: строка из USERBOT_STRING_SESSION (не зависит от файлов/томов) или файл data/relayer.session;
+    # если папка только для чтения — копируем файл во временную папку, иначе Telethon не сможет писать в sqlite
+    sess = SESSION
+    sv = os.getenv("USERBOT_STRING_SESSION", "").strip()
+    if sv:
+        from telethon.sessions import StringSession
+        sess = StringSession(sv)
+    else:
+        try:
+            probe = Path(SESSION + ".session").parent / ".wtest"
+            probe.write_text("1"); probe.unlink()
+        except OSError:
+            src = Path(SESSION + ".session")
+            if src.is_file():
+                import shutil, tempfile
+                dst = Path(tempfile.gettempdir()) / "relayer"
+                shutil.copy(src, str(dst) + ".session")
+                sess = str(dst)
+                print("userbot: data/ только для чтения — сессия скопирована во временную папку")
+    client = TelegramClient(sess, API_ID, API_HASH)
 
     @client.on(events.NewMessage(incoming=True))
     async def _incoming(ev):
@@ -1339,7 +1361,13 @@ async def userbot_main():
             # текстовый фолбэк
             await on_new_gift_notify(client, raw[:80], ev.sender_id)
 
-    async with client:
+    # connect() вместо `async with client` (он зовёт start() → input() «Please enter your phone» и вешает весь сервер)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            print("userbot: сессия data/relayer.session не авторизована — юзербот выключен "
+                  "(залей рабочий .session на постоянный том data/ или пересоздай его локально)")
+            return
         print("relayer userbot online")
         last_snap = 0.0
         while True:
@@ -1356,6 +1384,8 @@ async def userbot_main():
             except Exception as e:
                 print("queue error:", e)
             await asyncio.sleep(PERIOD)
+    finally:
+        await client.disconnect()
 
 
 
