@@ -7,7 +7,7 @@
 (() => {
   'use strict';
   const BG = 'static/boot/boot-clean.webp';
-  const IMAGES = ['static/boot/bat.webp','static/boot/goo.webp','static/boot/drip.webp','images/sky.webp','images/plank-left.webp','images/plank-mid.webp','images/plank-right.webp','images/hat.png','images/hatcoin.png','images/gram-px.png','images/axe-icon.webp',
+  const IMAGES = ['static/boot/bat.webp','static/boot/goo.webp','static/boot/drip.webp','images/sky.webp','images/plank-left.webp','images/plank-mid.webp','images/plank-right.webp','images/hat.png','images/hatcoin.png','images/star-px.png','images/axe-icon.webp',
     'static/scenes/halloween-nightfall.svg','static/halloween/nav-left.png','static/halloween/nav-mid.png','static/halloween/nav-right.png',
     'static/halloween/ui/side-speed.svg','static/halloween/ui/side-weapon.svg','static/halloween/ui/pumpkin-btn.svg','static/halloween/ui/plate-dark.svg','static/halloween/ui/plate-brown.svg',
     'static/chests/coffin/lid.svg','static/chests/coffin/base-candy.svg','static/chests/coffin/base-skeleton.svg','static/chests/coffin/base-empty.svg'];
@@ -4665,7 +4665,7 @@ html[data-halloween="on"][data-theme][data-sky] #view-chests .cx-bet {
 }
 html[data-halloween="on"][data-theme][data-sky] #view-chests #cxBetInput {
   min-width:0; height:34px; padding:0 10px 0 32px !important; font-size:13px !important;
-  background:#0d0610 url("/images/gram-px.png") 9px 50% / 16px 16px no-repeat !important;
+  background:#0d0610 url("/images/star-px.png") 9px 50% / 16px 16px no-repeat !important;
   color:#ffe8c2 !important; border:1px solid #250f05 !important; border-radius:6px !important;
   box-shadow:inset 0 0 0 1px #a64f1c88, inset 0 2px 0 #000a !important;
 }
@@ -4766,7 +4766,7 @@ html:not([data-halloween="on"]) #view-chests .cx-bet {
 }
 html:not([data-halloween="on"]) #view-chests #cxBetInput {
   min-width:0; height:34px; padding:0 10px 0 32px !important; font-size:13px !important; box-sizing:border-box;
-  background:#0006 url("/images/gram-px.png") 9px 50% / 16px 16px no-repeat !important;
+  background:#0006 url("/images/star-px.png") 9px 50% / 16px 16px no-repeat !important;
   border:2px solid var(--chest-edge) !important; border-radius:6px !important;
   box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--chest-line) 50%, transparent), inset 0 2px 0 #0008 !important;
 }
@@ -5490,10 +5490,25 @@ html[data-econ] #coinValue,html[data-econ] #balanceValue{display:none!important}
 .rw-ex,.rw-tasks,.rw-gems,.rw-h,.inv-relayer,.inv-tabs,.inv-grid{width:100%;box-sizing:border-box;align-self:stretch}
 #view-menu .menu-grid > #menuRewards{order:100!important}
 </style>
-<style>/* пополнение только звёздами StaticGram; шапка: алмазы слева, монеты справа */
-#depChooseTon,#depChooseCrypto,#depChooseGift{display:none!important}
-html[data-econ] #balanceChip{order:1} html[data-econ] #coinChip{order:2}
+<style>/* пополнение только звёздами StaticGram; шапка: алмазы слева, монеты (★) справа и они главные */
+#depChooseTon,#depChooseCrypto,#depChooseGift,.deposit-promo-field,.deposit-promo-status{display:none!important}
+html[data-econ] #balanceChip{order:1;transform:scale(.88);transform-origin:left center;opacity:.9}
+html[data-econ] #coinChip{order:2;border-color:#f2b53a!important;box-shadow:0 0 0 1px #5a3205,0 0 16px rgba(255,190,60,.38)!important}
+html[data-econ] #coinChip #coinMine{font-size:1.12em;color:#ffe08a;text-shadow:0 1px 0 #5a3205}
+html[data-econ] #coinChip img{width:20px;height:20px;image-rendering:pixelated}
 html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
+/* меню: ровная сетка 2 колонки, сверху главная игра на всю ширину */
+#view-menu .menu-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px!important;align-items:stretch!important;justify-items:stretch!important}
+#view-menu .menu-grid>.menu-card{width:auto!important;max-width:none!important;min-height:150px!important;margin:0!important;order:0!important;grid-column:auto!important;justify-self:stretch!important}
+#view-menu .menu-grid>#menuLeaders,#view-menu .menu-grid>#menuStaking{display:none!important}
+#view-menu .menu-grid>#menuChests{grid-column:1/-1!important}
+#view-menu .menu-grid>#menuInventory,#view-menu .menu-grid>#menuRewards{grid-column:auto!important;justify-self:stretch!important;width:auto!important;max-width:none!important}
+/* вывод звёзд: поле суммы */
+.wd-amt{display:flex;gap:8px;margin:8px 0}
+.wd-amt input{flex:1;min-width:0;box-sizing:border-box;padding:10px 12px;border-radius:6px;border:2px solid #c98b2e;background:#1b1020;color:#ffe08a;font-weight:700;font-size:18px;text-align:center}
+.wd-amt button{padding:0 14px;border-radius:6px;border:2px solid #c98b2e;background:#3a2410;color:#ffd36a;font-weight:700}
+#wdHint{margin:4px 0 8px;min-height:2.4em}
+.prize-card:has(img[src$="/images/hat.png"]) .wd-btn{display:none!important}
 </style>
 </head>
 <body>
@@ -5893,7 +5908,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       <span id="coinValue">0.00</span>
     </button>
     <button class="balance" id="balanceChip" type="button" aria-label="Баланс, пополнить">
-      <img decoding="async" src="images/gram-px.png" alt="" class="ton-ico">
+      <img decoding="async" src="images/star-px.png" alt="" class="ton-ico">
       <span id="balanceValue">0</span><span class="bal-plus" aria-hidden="true">+</span>
     </button>
   </header>
@@ -5924,7 +5939,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     <section class="view" id="view-staking" hidden>
       <div class="stake-toolbar"><button class="view-back" type="button" data-back="menu" aria-label="Назад">&lt;</button><h1 class="title">СТЕЙКИНГ</h1><button id="stakingLeaders" class="view-back" type="button" aria-label="Лидеры стейкинга"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M7 3.5h10v6a5 5 0 0 1-10 0z"/><path fill="none" d="M7 5.5H3.8v2.2A3.3 3.3 0 0 0 7 11M17 5.5h3.2v2.2A3.3 3.3 0 0 1 17 11"/><path fill="none" d="M12 14.5v3.5M8 20.5h8M9.5 18h5"/></svg></button><button id="stakingInfo" class="view-back" type="button" aria-label="Информация о стейкинге">i</button></div>
       <div class="stake-shell">
-        <div class="stake-summary"><small>Баланс стейкинга</small><strong id="stakingBalance">0 GRAM</strong><p id="stakingDaily">0 GRAM / сутки</p><p id="stakingHatCount">Шляп в стейкинге: 0</p><p id="stakingSlots">Доступно мест: 100</p></div>
+        <div class="stake-summary"><small>Баланс стейкинга</small><strong id="stakingBalance">0 ★</strong><p id="stakingDaily">0 ★ / сутки</p><p id="stakingHatCount">Шляп в стейкинге: 0</p><p id="stakingSlots">Доступно мест: 100</p></div>
         <div class="stake-actions"><button id="stakingAdd" data-staking-action="picker" hidden>Поступившие шляпы</button><button id="stakingTransfer" data-staking-action="withdraw">Перевести на основной баланс</button></div>
 
         <h2>Мой стейкинг</h2><p id="stakingEmpty" class="stake-empty">Пока здесь нет шляп. При пополнении шляпой выберите стейкинг.</p><div id="stakingPositions" class="stake-grid"></div>
@@ -6205,7 +6220,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
         <span class="mode-edge" id="chanceMin">—</span>
         <div class="mode-track" id="modeTrack">
           <span class="mode-tag mode-cost">
-            <img decoding="async" src="images/gram-px.png" alt="GRAM" class="ton-ico"><span id="modeCost">—</span>
+            <img decoding="async" src="images/star-px.png" alt="GRAM" class="ton-ico"><span id="modeCost">—</span>
           </span>
           <input type="range" id="modeSlider" min="0" max="60" step="1" value="30" aria-label="Шанс выигрыша">
           <span class="mode-tag mode-chance" id="modeChance">—</span>
@@ -6259,7 +6274,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
       <div class="pstats">
         <div class="pstat">
           <small>Выведено</small>
-          <b id="statWithdrawn">0 GRAM</b>
+          <b id="statWithdrawn">0 ★</b>
           <span id="statWithdrawnCount">0 призов</span>
         </div>
         <div class="pstat pstat-best">
@@ -6270,7 +6285,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
         </div>
         <div class="pstat">
           <small>Оборот</small>
-          <b id="statTurnover">0 GRAM</b>
+          <b id="statTurnover">0 ★</b>
           <span id="statGames">0 игр</span>
         </div>
       </div>
@@ -6301,17 +6316,17 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
           <div class="ref-stats">
             <div class="ref-stat"><b id="refCount">0</b><small id="refCountLabel">рефералов</small></div>
-            <div class="ref-stat"><b id="refEarned">0</b><small>заработано GRAM</small></div>
+            <div class="ref-stat"><b id="refEarned">0</b><small>заработано ★</small></div>
           </div>
 
           <div class="ref-withdraw">
             <div class="ref-balance">
               <small>Доступно</small>
-              <b id="refBalance">0 GRAM</b>
+              <b id="refBalance">0 ★</b>
             </div>
             <button class="wd-btn ref-wd" id="refWithdrawBtn" disabled="">Вывести</button>
           </div>
-          <p class="ref-hint" id="refHint">Вывод от 1 GRAM</p>
+          <p class="ref-hint" id="refHint">Вывод от 1 ★</p>
         </div>
       </div>
 
@@ -6492,10 +6507,10 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 <div class="modal" id="cxWinModal" hidden="">
   <div class="modal-card cx-win-card">
     <div class="cx-win-glow"></div>
-    <img loading="lazy" decoding="async" alt="" class="modal-hat cx-win-img" id="cxWinImg" src="images/gram-px.png">
+    <img loading="lazy" decoding="async" alt="" class="modal-hat cx-win-img" id="cxWinImg" src="images/star-px.png">
     <h2 id="cxWinTitle">Победа!</h2>
     <p id="cxWinGift" class="cx-win-gift"></p>
-    <div class="cx-win-sum"><span>На баланс добавлено</span><b id="cxWinSum">+0 GRAM</b></div>
+    <div class="cx-win-sum"><span>На баланс добавлено</span><b id="cxWinSum">+0 ★</b></div>
     <button class="cta" id="cxWinOk" type="button">Отлично</button>
   </div>
 </div>
@@ -6513,7 +6528,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
         </button>
         <button class="dep-method dep-crypto" id="depChooseCrypto" type="button" data-method="crypto" hidden="">
           <span class="dep-m-ico"><img loading="lazy" decoding="async" src="/static/img/cryptobot.png" alt="CryptoBot" draggable="false"></span>
-          <span class="dep-m-copy"><b>CryptoBot</b><small>Оплата GRAM в Telegram через @CryptoBot</small></span>
+          <span class="dep-m-copy"><b>CryptoBot</b><small>Оплата ★ в Telegram через @CryptoBot</small></span>
           <span class="dep-m-arrow">›</span>
         </button>
         <button class="dep-method dep-stars" id="depChooseStars" type="button" data-method="stars">
@@ -6532,7 +6547,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepTon" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/ton.png" alt="" draggable="false">Пополнение GRAM</h2>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/ton.png" alt="" draggable="false">Пополнение ★</h2>
       <p class="muted dep-note">Перевод зачислится автоматически в течение минуты.</p>
       <div class="dep-wallet">
         <span class="dep-wallet-addr" id="depWalletAddr">Кошелёк не подключён</span>
@@ -6546,7 +6561,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
         <button class="amt" data-amt="50" data-target="depositAmount">50</button>
       </div>
       <input type="number" id="depositAmount" min="0.1" step="0.1" value="10" inputmode="decimal"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
-      <button class="cta" id="depositSendBtn">Отправить GRAM</button>
+      <button class="cta" id="depositSendBtn">Отправить ★</button>
     </div>
 
     <div class="dep-step" id="depStepCrypto" hidden="">
@@ -6558,7 +6573,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
         <button class="amt" data-amt="10" data-target="cryptoAmount">10</button>
         <button class="amt" data-amt="25" data-target="cryptoAmount">25</button>
       </div>
-      <input type="number" id="cryptoAmount" min="0.1" step="0.1" value="5" inputmode="decimal" aria-label="Сумма пополнения в GRAM"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
+      <input type="number" id="cryptoAmount" min="0.1" step="0.1" value="5" inputmode="decimal" aria-label="Сумма пополнения в ★"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
       <button class="cta dep-crypto-pay" id="cryptoPayBtn" type="button">Создать счёт</button>
       <button class="ghost" id="cryptoCheckBtn" type="button" hidden="">Проверить оплату</button>
       <p class="dep-status" id="cryptoStatus" hidden=""></p>
@@ -6566,16 +6581,15 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
     <div class="dep-step" id="depStepStars" hidden="">
       <button class="dep-back" type="button" data-dep-back>← Способы пополнения</button>
-      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/star.png" alt="" draggable="false">Пополнение Stars</h2>
-      <p class="muted dep-note">Платёж откроется внутри Telegram. Звёзды конвертируются в GRAM по курсу ниже.</p>
+      <h2><img loading="lazy" decoding="async" class="dep-head-ico" src="/static/img/star.png" alt="" draggable="false">Пополнение звёздами</h2>
+      <p class="muted dep-note">Оплата звёздами StaticGram откроется прямо в приложении. Выбери сумму или впиши свою.</p>
       <div class="amount-row">
-        <button class="amt" data-amt="1" data-target="starsAmount">1</button>
-        <button class="amt" data-amt="5" data-target="starsAmount">5</button>
-        <button class="amt" data-amt="10" data-target="starsAmount">10</button>
-        <button class="amt" data-amt="25" data-target="starsAmount">25</button>
+        <button class="amt" data-amt="1000" data-target="starsAmount">1к</button>
+        <button class="amt" data-amt="5000" data-target="starsAmount">5к</button>
+        <button class="amt" data-amt="10000" data-target="starsAmount">10к</button>
       </div>
-      <input type="number" id="starsAmount" min="0.1" step="0.1" value="5" inputmode="decimal" aria-label="Сумма пополнения в GRAM"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
-      <div class="dep-quote"><span id="starsRate">1 GRAM = 100 Stars</span><b id="starsQuote">—</b></div>
+      <input type="number" id="starsAmount" min="1" step="1" value="1000" inputmode="numeric" aria-label="Сумма пополнения, ★"><label class="deposit-promo-field">Есть промокод? Введите сюда<input data-deposit-promo autocomplete="off" autocapitalize="characters" maxlength="32" placeholder="Промокод" aria-label="Промокод на пополнение"></label><small class="deposit-promo-status" role="status"></small>
+      <div class="dep-quote"><span id="starsRate">1 ★ = 100 Stars</span><b id="starsQuote">—</b></div>
       <div class="dep-lock"><img loading="lazy" decoding="async" src="/static/img/star.png" alt="" draggable="false"><div><b id="starsLockTitle">Вывод подарков заблокирован на 21 день</b><small>После оплаты Stars вывод призов временно недоступен — дата появится после оплаты.</small></div></div>
       <button class="cta dep-stars-pay" id="starsPayBtn" type="button">Оплатить Stars</button>
       <p class="dep-status" id="starsStatus" hidden=""></p>
@@ -6687,7 +6701,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
 
 <script>
 (function () {
-  const GRAM = 'images/gram-px.png';
+  const GRAM = 'images/star-px.png';
   const HAT = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges"><rect x="6" y="44" width="52" height="8" fill="#2a1450"/><rect x="8" y="42" width="48" height="6" fill="#5b2bb0"/><rect x="20" y="20" width="24" height="24" fill="#4a1fa0"/><rect x="26" y="10" width="14" height="12" fill="#4a1fa0"/><rect x="32" y="4" width="8" height="8" fill="#5b2bb0"/><rect x="20" y="36" width="24" height="6" fill="#ffc043"/><rect x="29" y="36" width="6" height="6" fill="#fff0b0"/></svg>');
   const CAT = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges"><rect x="14" y="14" width="8" height="12" fill="#2b2b3a"/><rect x="42" y="14" width="8" height="12" fill="#2b2b3a"/><rect x="14" y="22" width="36" height="28" fill="#3a3a4e"/><rect x="22" y="30" width="6" height="6" fill="#ffe08a"/><rect x="36" y="30" width="6" height="6" fill="#ffe08a"/><rect x="30" y="40" width="4" height="4" fill="#ff8aa8"/></svg>');
   const AXE = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges"><rect x="30" y="14" width="6" height="44" fill="#7a4a26"/><rect x="30" y="14" width="2" height="44" fill="#a8713c"/><rect x="14" y="10" width="18" height="22" fill="#9aa3b5"/><rect x="10" y="14" width="6" height="14" fill="#cfd6e4"/><rect x="14" y="10" width="18" height="3" fill="#e8edf7"/></svg>');
@@ -6812,7 +6826,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Шляпа Coin': { en: 'Hat Coin', zh: '帽子币' },
     'Шляпа Coin — кешбэк за ставки': { en: 'Hat Coin — cashback for stakes', zh: '帽子币——投注返现' },
     'Баланс Шляпа Coin': { en: 'Hat Coin balance', zh: '帽子币余额' },
-    '1 GRAM ставок = {rate} Шляпа Coin': { en: '1 GRAM in stakes = {rate} Hat Coin', zh: '每投注 1 GRAM 获得 {rate} 帽子币' },
+    '1 ★ ставок = {rate} Шляпа Coin': { en: '1 ★ in stakes = {rate} Hat Coin', zh: '每投注 1 ★ 获得 {rate} 帽子币' },
     'Начисляется за каждую ставку, независимо от результата игры.': { en: 'Earned on every stake, whatever the game result.', zh: '每次投注均可获得，与游戏结果无关。' },
     'ШляпоКоины — кешбэк за игры': { en: 'HatCoins — cashback for playing', zh: '帽子币——游戏返现' },
     'ШляпоКоины': { en: 'HatCoins', zh: '帽子币' },
@@ -6841,10 +6855,10 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Где кот? Жми на шляпу': { en: 'Where is the cat? Tap a hat', zh: '猫在哪？点一顶帽子' },
     'Кот твой! Приз в профиле': { en: 'The cat is yours! The prize is in your profile', zh: '猫归你了！奖品已放入个人页' },
     'Кот был не там. Ещё разок?': { en: 'The cat wasn’t there. One more try?', zh: '猫不在那里。再来一次？' },
-    '{price} GRAM · шанс 1 из {cups}': { en: '{price} GRAM · 1 in {cups} chance', zh: '{price} GRAM · {cups} 选 1' },
+    '{price} ★ · шанс 1 из {cups}': { en: '{price} ★ · 1 in {cups} chance', zh: '{price} ★ · {cups} 选 1' },
     'шанс 1 из {cups}': { en: '1 in {cups} chance', zh: '{cups} 选 1' },
     'Идёт игра…': { en: 'Playing…', zh: '游戏中…' },
-    'Угадать за {sum} GRAM': { en: 'Guess for {sum} GRAM', zh: '猜一猜 · {sum} GRAM' },
+    'Угадать за {sum} ★': { en: 'Guess for {sum} ★', zh: '猜一猜 · {sum} ★' },
     'Не хватает на игру': { en: 'Not enough to play', zh: '余额不足' },
     'Режим сейчас выключен': { en: 'This mode is off right now', zh: '该模式暂时关闭' },
     'Партия устарела, ставка вернулась — жми «Угадать»': { en: 'The round expired, your stake is back — tap “Guess”', zh: '本局已过期，押注已退回——请点击“猜一猜”' },
@@ -6878,7 +6892,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Загружаю…': { en: 'Loading…', zh: '加载中…' },
     'Выбери подарок': { en: 'Choose a gift', zh: '选择礼物' },
     'Все игроки вместе бьют босса.': { en: 'All players fight the boss together.', zh: '所有玩家一起攻击首领。' },
-    '{n} GRAM = 1 HP урона.': { en: '{n} GRAM = 1 HP of damage.', zh: '{n} GRAM = 1 点伤害。' },
+    '{n} ★ = 1 HP урона.': { en: '{n} ★ = 1 HP of damage.', zh: '{n} ★ = 1 点伤害。' },
     'Чем больше урона, тем выше место в топе.': { en: 'The more damage, the higher your place in the top.', zh: '伤害越高，排名越靠前。' },
     'Если время выйдет и босс не будет побеждён, награды не выдаются.': { en: 'If time runs out and the boss is not defeated, no rewards are given.', zh: '如果时间结束时首领未被击败，则不发放奖励。' },
     'Призы:': { en: 'Prizes:', zh: '奖品：' },
@@ -6891,7 +6905,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Повторить': { en: 'Retry', zh: '重试' },
     'Готово': { en: 'Done', zh: '完成' },
     'Ставка подарком': { en: 'Gift stake', zh: '礼物赌注' },
-    'Ставка GRAM': { en: 'GRAM stake', zh: 'GRAM 赌注' },
+    'Ставка ★': { en: 'GRAM stake', zh: 'GRAM 赌注' },
     'с баланса': { en: 'from balance', zh: '来自余额' },
     'Выберите цель': { en: 'Choose a target', zh: '选择目标' },
     'Выберите ставку': { en: 'Choose a stake', zh: '选择赌注' },
@@ -6932,7 +6946,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Игрок': { en: 'Player', zh: '玩家' },
     'Кошелёк не подключён': { en: 'Wallet not connected', zh: '未连接钱包' },
     'не настроен': { en: 'not set up', zh: '未设置' },
-    'До уровня {level}: ещё {left} GRAM оборота': { en: 'To level {level}: {left} GRAM more turnover', zh: '距离 {level} 级：还需 {left} GRAM 流水' },
+    'До уровня {level}: ещё {left} ★ оборота': { en: 'To level {level}: {left} ★ more turnover', zh: '距离 {level} 级：还需 {left} ★ 流水' },
     'Выведено': { en: 'Withdrawn', zh: '已提取' },
     'Лучший дроп': { en: 'Best drop', zh: '最佳掉落' },
     'Оборот': { en: 'Turnover', zh: '流水' },
@@ -6978,7 +6992,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Цена': { en: 'Price', zh: '价格' },
     'Подарок от Костяна каждому новичку.': { en: 'A gift from Kostyan to every newcomer.', zh: '科斯彦送给每位新玩家的礼物。' },
     'Здарова! Я Костян, хозяин этой лавки. Давай коротко покажу, что тут есть.': { en: 'Hey! I’m Kostyan, keeper of this shop. Let me quickly show you around.', zh: '嘿！我是科斯彦，这家商店的老板。我来带你快速逛一逛。' },
-    'Магазин. Тут я меняю товары на HatCoin и GRAM: оружие, подарки, NFT. Некоторых ордеров мало, так что не зевай.': { en: 'Store. Here I trade goods for HatCoin and GRAM: weapons, gifts, NFTs. Some orders are limited, so don’t snooze.', zh: '商品。我在这里用 HatCoin 和 GRAM 换取商品：武器、礼物、NFT。有些订单数量有限，别错过。' },
+    'Магазин. Тут я меняю товары на HatCoin и ★: оружие, подарки, NFT. Некоторых ордеров мало, так что не зевай.': { en: 'Store. Here I trade goods for HatCoin and ★: weapons, gifts, NFTs. Some orders are limited, so don’t snooze.', zh: '商品。我在这里用 HatCoin 和 ★ 换取商品：武器、礼物、NFT。有些订单数量有限，别错过。' },
     'Достижения. Они остаются навсегда: выполнил, забрал награду, и запись станет серой с пометкой «Получено».': { en: 'Achievements. They stay forever: complete one, claim the reward, and it turns grey marked “Received”.', zh: '成就。成就永久保留：完成后领取奖励，条目会变灰并标记“已领取”。' },
     'Квесты. Задания со сроком: успей выполнить до конца таймера и забирай награду.': { en: 'Quests. Timed tasks: finish before the timer ends and claim your reward.', zh: '任务。限时任务：在倒计时结束前完成并领取奖励。' },
     'А оружие для прокрута меняется вот здесь. Чем реже оружие, тем ярче оно светится. Новое открывается за награды и в магазине.': { en: 'Your spin weapon is changed right here. The rarer the weapon, the brighter it glows. New ones unlock through rewards and the store.', zh: '转盘武器在这里更换。武器越稀有，光芒越亮。新武器可通过奖励和商店解锁。' },
@@ -7000,7 +7014,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Да, купить': { en: 'Yes, buy', zh: '是的，购买' },
     'Загружаем лавку…': { en: 'Loading the shop…', zh: '正在加载商店…' },
     'Закрыто': { en: 'Locked', zh: '未解锁' },
-    'Зачислено {sum} GRAM': { en: '{sum} GRAM credited', zh: '已到账 {sum} GRAM' },
+    'Зачислено {sum} ★': { en: '{sum} ★ credited', zh: '已到账 {sum} ★' },
     'Костян пока раскладывает товар. Загляни позже!': { en: 'Kostyan is still setting out his goods. Check back later!', zh: '科斯彦还在摆货，稍后再来看看！' },
     'Купить': { en: 'Buy', zh: '购买' },
     'Личное предложение': { en: 'Personal offer', zh: '专属优惠' },
@@ -7015,8 +7029,8 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Оплатите счёт в CryptoBot — баланс обновится автоматически': { en: 'Pay the invoice in CryptoBot — balance will update automatically', zh: '请在 CryptoBot 支付账单，余额将自动更新' },
     'Ордер Костяна': { en: 'Kostyan’s order', zh: '科斯彦的订单' },
     'Осталось: {n}': { en: 'Left: {n}', zh: '剩余：{n}' },
-    'Отправь NFT-подарок на @{account}. Зачисление — по минимальной цене модели на Portals. Для шляп при зачислении на баланс добавляется 10%; Black и Onyx Black оцениваются по фону.': { en: 'Send an NFT gift to @{account} — it is instantly exchanged for GRAM at the collection floor on Portals.', zh: '把 NFT 礼物发送给 @{account}，将按 Portals 上的系列底价立即兑换为 GRAM。' },
-    'Отправь подарок на @{account} — получишь GRAM на баланс': { en: 'Send a gift to @{account} — get GRAM on your balance', zh: '把礼物发送给 @{account}，GRAM 将到账余额' },
+    'Отправь NFT-подарок на @{account}. Зачисление — по минимальной цене модели на Portals. Для шляп при зачислении на баланс добавляется 10%; Black и Onyx Black оцениваются по фону.': { en: 'Send an NFT gift to @{account} — it is instantly exchanged for ★ at the collection floor on Portals.', zh: '把 NFT 礼物发送给 @{account}，将按 Portals 上的系列底价立即兑换为 ★。' },
+    'Отправь подарок на @{account} — получишь ★ на баланс': { en: 'Send a gift to @{account} — get ★ on your balance', zh: '把礼物发送给 @{account}，GRAM 将到账余额' },
     'Покупка совершена': { en: 'Purchase complete', zh: '购买成功' },
     'Проверяем оплату…': { en: 'Checking the payment…', zh: '正在确认付款…' },
     'Распродано': { en: 'Sold out', zh: '已售罄' },
@@ -7053,7 +7067,7 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Выбрано': { en: 'Selected', zh: '已选择' },
     'Тип крутки': { en: 'Spin style', zh: '旋转方式' },
     'Подарок для ставки': { en: 'Gift for stake', zh: '用于下注的礼物' },
-    'Ставить GRAM': { en: 'Bet GRAM', zh: '用TON下注' },
+    'Ставить ★': { en: 'Bet ★', zh: '用TON下注' },
     'Рулетка': { en: 'Roulette', zh: '轮盘' },
     'Маятник': { en: 'Pendulum', zh: '摆锤' },
     'Рывок': { en: 'Dash', zh: '冲刺' },
@@ -7094,21 +7108,21 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Включить свет': {en:'Turn light on',zh:'开灯'},
     'Выключить свет': {en:'Turn light off',zh:'关灯'},
     'Создать реферальную ссылку': { en: 'Create referral link', zh: '生成邀请链接' },
-    'заработано GRAM': { en: 'GRAM earned', zh: '已赚取 GRAM' },
+    'заработано ★': { en: 'GRAM earned', zh: '已赚取 ★' },
     'Доступно': { en: 'Available', zh: '可提取' },
-    'В обработке: {sum} GRAM': { en: 'Processing: {sum} GRAM', zh: '处理中：{sum} GRAM' },
-    'Вывод от {sum} GRAM': { en: 'Withdraw from {sum} GRAM', zh: '{sum} GRAM 起提' },
+    'В обработке: {sum} ★': { en: 'Processing: {sum} ★', zh: '处理中：{sum} ★' },
+    'Вывод от {sum} ★': { en: 'Withdraw from {sum} ★', zh: '{sum} ★ 起提' },
     'Ссылки временно недоступны': { en: 'Links are temporarily unavailable', zh: '链接暂时不可用' },
     'Не удалось создать ссылку': { en: 'Couldn’t create the link', zh: '生成链接失败' },
     'Скопировано': { en: 'Copied', zh: '已复制' },
     'Копировать': { en: 'Copy', zh: '复制' },
     'Копир.': { en: 'Copy', zh: '复制' },
     'Не удалось скопировать': { en: 'Couldn’t copy', zh: '复制失败' },
-    'Минимум для вывода — {sum} GRAM': { en: 'Minimum withdrawal is {sum} GRAM', zh: '最低提取 {sum} GRAM' },
+    'Минимум для вывода — {sum} ★': { en: 'Minimum withdrawal is {sum} ★', zh: '最低提取 {sum} ★' },
     'Не удалось создать заявку': { en: 'Couldn’t create the request', zh: '创建申请失败' },
     'Промокод': { en: 'Promo code', zh: '兑换码' },
     'Активировать': { en: 'Redeem', zh: '兑换' },
-    'Промокод активирован: +{sum} GRAM': { en: 'Promo code redeemed: +{sum} GRAM', zh: '兑换成功：+{sum} GRAM' },
+    'Промокод активирован: +{sum} ★': { en: 'Promo code redeemed: +{sum} ★', zh: '兑换成功：+{sum} ★' },
     'Такого промокода нет': { en: 'No such promo code', zh: '兑换码不存在' },
     'Этот промокод больше не действует': { en: 'This promo code is no longer valid', zh: '该兑换码已失效' },
     'Этот промокод уже разобрали': { en: 'This promo code is used up', zh: '该兑换码已被领完' },
@@ -7119,10 +7133,10 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Продать всё': { en: 'Sell all', zh: '全部出售' },
     'Пока пусто. Крути апгрейд — выбитые призы появятся здесь.':
       { en: 'Empty for now. Prizes you win will show up here.', zh: '暂时为空。赢得的奖品会显示在这里。' },
-    'Продать {prizes} за {sum} GRAM? Призы, по которым подана заявка на вывод, останутся.':
-      { en: 'Sell {prizes} for {sum} GRAM? Prizes with a withdrawal request will stay.', zh: '以 {sum} GRAM 出售 {prizes}？已申请提取的奖品会保留。' },
-    'Продано {n} шт. на {sum} GRAM': { en: 'Sold {n} for {sum} GRAM', zh: '已出售 {n} 件，共 {sum} GRAM' },
-    'Продано за {sum} GRAM': { en: 'Sold for {sum} GRAM', zh: '已以 {sum} GRAM 出售' },
+    'Продать {prizes} за {sum} ★? Призы, по которым подана заявка на вывод, останутся.':
+      { en: 'Sell {prizes} for {sum} ★? Prizes with a withdrawal request will stay.', zh: '以 {sum} ★ 出售 {prizes}？已申请提取的奖品会保留。' },
+    'Продано {n} шт. на {sum} ★': { en: 'Sold {n} for {sum} ★', zh: '已出售 {n} 件，共 {sum} ★' },
+    'Продано за {sum} ★': { en: 'Sold for {sum} ★', zh: '已以 {sum} ★ 出售' },
     'Продать {sum}': { en: 'Sell {sum}', zh: '出售 {sum}' },
     'Продавать нечего': { en: 'Nothing to sell', zh: '没有可出售的奖品' },
     'Не удалось продать': { en: 'Couldn’t sell', zh: '出售失败' },
@@ -7145,10 +7159,10 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Ожидает': { en: 'Waiting', zh: '等待中' },
     'Продать подарок? Заявка на вывод будет отменена.': { en: 'Sell the gift? The withdrawal request will be cancelled.', zh: '出售礼物？提现申请将被取消。' },
     'Мишка отправлен тебе подарком в Telegram': { en: 'The bear has been sent to you as a Telegram gift', zh: '小熊已作为 Telegram 礼物发送给你' },
-    'Вывод этого подарка стоит {sum} GRAM — спишется с баланса. Вывести?':
-      { en: 'Withdrawing this gift costs {sum} GRAM — it will be charged from your balance. Withdraw?', zh: '提取该礼物需支付 {sum} GRAM——将从余额扣除。确认提取？' },
-    'Вывод этого подарка стоит {sum} GRAM — не хватает на балансе':
-      { en: 'Withdrawing this gift costs {sum} GRAM — not enough on your balance', zh: '提取该礼物需支付 {sum} GRAM——余额不足' },
+    'Вывод этого подарка стоит {sum} ★ — спишется с баланса. Вывести?':
+      { en: 'Withdrawing this gift costs {sum} ★ — it will be charged from your balance. Withdraw?', zh: '提取该礼物需支付 {sum} ★——将从余额扣除。确认提取？' },
+    'Вывод этого подарка стоит {sum} ★ — не хватает на балансе':
+      { en: 'Withdrawing this gift costs {sum} ★ — not enough on your balance', zh: '提取该礼物需支付 {sum} ★——余额不足' },
     'Плата за вывод изменилась — попробуй ещё раз': { en: 'The withdrawal fee has changed — try again', zh: '提取费用已变更——请重试' },
     'Заявка на вывод создана': { en: 'Withdrawal request created', zh: '提取申请已创建' },
     'Заявка уже создана': { en: 'The request already exists', zh: '申请已存在' },
@@ -7173,15 +7187,15 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Перейти в профиль': { en: 'Go to Profile', zh: '前往个人页' },
 
     'Пополнение': { en: 'Top up', zh: '充值' },
-    'Перевод в GRAM зачислится автоматически в течение минуты.':
-      { en: 'A GRAM transfer is credited automatically within a minute.', zh: 'GRAM 转账将在一分钟内自动到账。' },
+    'Перевод в ★ зачислится автоматически в течение минуты.':
+      { en: 'A ★ transfer is credited automatically within a minute.', zh: 'GRAM 转账将在一分钟内自动到账。' },
     'Сменить': { en: 'Change', zh: '更换' },
     'Отправить': { en: 'Send', zh: '发送' },
     'Подключить': { en: 'Connect', zh: '连接' },
     'Отвязать': { en: 'Disconnect', zh: '断开' },
     'Нет кошелька': { en: 'No wallet', zh: '无钱包' },
     'Кошелёк недоступен': { en: 'Wallet unavailable', zh: '钱包不可用' },
-    'Минимум {sum} GRAM': { en: 'Minimum {sum} GRAM', zh: '最低 {sum} GRAM' },
+    'Минимум {sum} ★': { en: 'Minimum {sum} ★', zh: '最低 {sum} ★' },
     'Недостаточно средств': { en: 'Insufficient funds', zh: '余额不足' },
     'Пополнить подарком': { en: 'Top up with a gift', zh: '用礼物充值' },
     'Перевести вручную': { en: 'Transfer manually', zh: '手动转账' },
@@ -7209,8 +7223,8 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     '1. Открой «{title}» в своём профиле Telegram': { en: '1. Open “{title}” in your Telegram profile', zh: '1. 在 Telegram 个人资料中打开“{title}”' },
     '2. Нажми «Передать»': { en: '2. Tap “Transfer”', zh: '2. 点击“转赠”' },
     '3. Выбери @{account}': { en: '3. Choose @{account}', zh: '3. 选择 @{account}' },
-    'Придёт около {sum} GRAM — точная сумма по цене в момент получения. Бот пришлёт сообщение.':
-      { en: 'About {sum} GRAM will arrive — the exact amount depends on the price at the moment of receipt. The bot will message you.', zh: '约到账 {sum} GRAM——具体金额以收到时的价格为准。机器人会发消息通知。' },
+    'Придёт около {sum} ★ — точная сумма по цене в момент получения. Бот пришлёт сообщение.':
+      { en: 'About {sum} ★ will arrive — the exact amount depends on the price at the moment of receipt. The bot will message you.', zh: '约到账 {sum} ★——具体金额以收到时的价格为准。机器人会发消息通知。' },
     'Этот подарок проверит админ — бот пришлёт сообщение с суммой.':
       { en: 'An admin will check this gift — the bot will message you the amount.', zh: '该礼物将由管理员审核——机器人会发送金额通知。' },
 
@@ -7249,10 +7263,10 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     'Сумма': { en: 'Payout', zh: '奖金' },
     'Мимиков': { en: 'Mimics', zh: '宝箱怪数量' },
     'Играть подарком': { en: 'Play with gift', zh: '用礼物游玩' },
-    'Играть за {sum} GRAM': { en: 'Play for {sum} GRAM', zh: '花 {sum} GRAM 游玩' },
-    'Забрать {sum} GRAM': { en: 'Cash out {sum} GRAM', zh: '提现 {sum} GRAM' },
+    'Играть за {sum} ★': { en: 'Play for {sum} ★', zh: '花 {sum} ★ 游玩' },
+    'Забрать {sum} ★': { en: 'Cash out {sum} ★', zh: '提现 {sum} ★' },
     'Открой сундук': { en: 'Open a chest', zh: '打开一个宝箱' },
-    'Ставка {min}–{max} GRAM': { en: 'Bet {min}–{max} GRAM', zh: '下注 {min}–{max} GRAM' },
+    'Ставка {min}–{max} ★': { en: 'Bet {min}–{max} ★', zh: '下注 {min}–{max} ★' },
     'У тебя нет подарков для ставки': { en: 'You have no gifts to bet', zh: '你没有可下注的礼物' },
     'Раунд идёт — открывай сундуки': { en: 'Round in progress — open chests', zh: '回合进行中——打开宝箱' },
     'Раунд идёт — сдвигай крышки': { en: 'Round in progress — slide the lids', zh: '回合进行中——推开棺盖' },
@@ -7683,9 +7697,9 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Your balance: ",
     "zh": "你的余额："
   },
-  " GRAM / сутки": {
-    "en": " GRAM / day",
-    "zh": " GRAM / 天"
+  " ★ / сутки": {
+    "en": " ★ / day",
+    "zh": " ★ / 天"
   },
   "Мой стейкинг": {
     "en": "My staking",
@@ -7735,17 +7749,17 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Boss defeated",
     "zh": "首领已击败"
   },
-  "0 GRAM / сутки": {
-    "en": "0 GRAM / day",
-    "zh": "0 GRAM / 天"
+  "0 ★ / сутки": {
+    "en": "0 ★ / day",
+    "zh": "0 ★ / 天"
   },
   "Баланс после:": {
     "en": "Balance after:",
     "zh": "结算后余额："
   },
-  "Отправить GRAM": {
-    "en": "Send GRAM",
-    "zh": "发送 GRAM"
+  "Отправить ★": {
+    "en": "Send ★",
+    "zh": "发送 ★"
   },
   "Авторы звуков": {
     "en": "Sound credits",
@@ -7795,15 +7809,15 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Boss defeated!",
     "zh": "首领已击败！"
   },
-  "Вывод от 1 GRAM": {
-    "en": "Withdraw from 1 GRAM",
-    "zh": "最低提取 1 GRAM"
+  "Вывод от 1 ★": {
+    "en": "Withdraw from 1 ★",
+    "zh": "最低提取 1 ★"
   },
   "Добавить шляпу": {
     "en": "Add a hat",
     "zh": "添加帽子"
   },
-  "Пополнение GRAM": {
+  "Пополнение ★": {
     "en": "GRAM deposit",
     "zh": "GRAM 充值"
   },
@@ -8363,21 +8377,21 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "CryptoBot deposits disabled",
     "zh": "CryptoBot 充值已关闭"
   },
-  "{v0} GRAM / сутки · начислено {v1} GRAM": {
-    "en": "{v0} GRAM / day · earned {v1} GRAM",
-    "zh": "{v0} GRAM / 天 · 已产生 {v1} GRAM"
+  "{v0} ★ / сутки · начислено {v1} ★": {
+    "en": "{v0} ★ / day · earned {v1} ★",
+    "zh": "{v0} ★ / 天 · 已产生 {v1} ★"
   },
   "Анимированный фон и работающие приборы": {
     "en": "Animated background and working gauges",
     "zh": "动态背景与运转的仪表"
   },
-  "На основной баланс переведено {v0} GRAM": {
-    "en": "Transferred {v0} GRAM to main balance",
-    "zh": "已将 {v0} GRAM 转入主余额"
+  "На основной баланс переведено {v0} ★": {
+    "en": "Transferred {v0} ★ to main balance",
+    "zh": "已将 {v0} ★ 转入主余额"
   },
-  "Оплата GRAM в Telegram через @CryptoBot": {
-    "en": "Pay GRAM in Telegram using @CryptoBot",
-    "zh": "通过 Telegram 的 @CryptoBot 支付 GRAM"
+  "Оплата ★ в Telegram через @CryptoBot": {
+    "en": "Pay ★ in Telegram using @CryptoBot",
+    "zh": "通过 Telegram 的 @CryptoBot 支付 ★"
   },
   "Вывод подарков заблокирован на 21 день": {
     "en": "Gift withdrawals locked for 21 days",
@@ -8391,9 +8405,9 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Received equipment stays permanently.",
     "zh": "已获得的装备将永久保留。"
   },
-  "Отправь подарок — получишь GRAM на баланс": {
-    "en": "Send a gift to receive GRAM on your balance",
-    "zh": "发送礼物后获得 GRAM 余额"
+  "Отправь подарок — получишь ★ на баланс": {
+    "en": "Send a gift to receive ★ on your balance",
+    "zh": "发送礼物后获得 ★ 余额"
   },
   "Окружение Хэллоуина — адаптация записей,": {
     "en": "Halloween ambience — adapted recordings,",
@@ -8487,17 +8501,17 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Kostyan is preparing new quests. Check back soon!",
     "zh": "科斯佳正在准备新任务，敬请期待！"
   },
-  " GRAM принятых ставок = 1 HP урона. Множители: апгрейды ×": {
-    "en": " GRAM in accepted stakes = 1 HP damage. Multipliers: upgrades ×",
-    "zh": " GRAM 有效投注 = 1 点伤害。倍率：升级 ×"
+  " ★ принятых ставок = 1 HP урона. Множители: апгрейды ×": {
+    "en": " ★ in accepted stakes = 1 HP damage. Multipliers: upgrades ×",
+    "zh": " ★ 有效投注 = 1 点伤害。倍率：升级 ×"
   },
   "Особые игровые звуки, звук вращения колеса и звуки лавки": {
     "en": "Unique game, wheel spin and shop sounds",
     "zh": "专属游戏、转盘及商店音效"
   },
-  "База для новой шляпы: {v0} GRAM. Доход: {v1} GRAM в сутки.": {
-    "en": "Base for a new hat: {v0} GRAM. Income: {v1} GRAM per day.",
-    "zh": "新帽子基准价：{v0} GRAM。每日收益：{v1} GRAM。"
+  "База для новой шляпы: {v0} ★. Доход: {v1} ★ в сутки.": {
+    "en": "Base for a new hat: {v0} ★. Income: {v1} ★ per day.",
+    "zh": "新帽子基准价：{v0} ★。每日收益：{v1} ★。"
   },
   "Выполняй задания, получай награды и прокачивай свою удачу!": {
     "en": "Complete quests, earn rewards and improve your luck!",
@@ -8543,9 +8557,9 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "No response. Press Continue series; you will not be charged twice.",
     "zh": "未收到响应，请点击继续连转，不会重复扣费。"
   },
-  "Платёж откроется внутри Telegram. Звёзды конвертируются в GRAM по курсу ниже.": {
-    "en": "Payment opens in Telegram. Stars convert to GRAM at the rate below.",
-    "zh": "支付将在 Telegram 中打开，Stars 按下方汇率兑换为 GRAM。"
+  "Платёж откроется внутри Telegram. Звёзды конвертируются в ★ по курсу ниже.": {
+    "en": "Payment opens in Telegram. Stars convert to ★ at the rate below.",
+    "zh": "支付将在 Telegram 中打开，Stars 按下方汇率兑换为 ★。"
   },
   ". Каждая ставка учитывается один раз. Последний удар ограничен оставшимся HP.": {
     "en": ". Each stake counts once. The final hit is capped by remaining HP.",
@@ -8619,9 +8633,9 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Win before time expires: all participants who dealt damage receive the shared reward, and leaders earn extra prizes. No rewards if time runs out or battle is cancelled.",
     "zh": "请在倒计时结束前获胜：造成伤害的参与者获得共同奖励，领先玩家另有排名奖励。超时或取消战斗均不发放奖励。"
   },
-  "Друг засчитывается после достижения 2-го уровня в Telegram и пополнения от 1 GRAM. Ожидают подтверждения: {v0}. За каждые 10 подтверждённых друзей — фри спин коин. До награды: {v1}.": {
-    "en": "A friend qualifies at Telegram level 2 with at least 1 GRAM deposited. Pending: {v0}. Every 10 qualified friends earns a free spin coin. Remaining: {v1}.",
-    "zh": "好友达到 Telegram 2 级且充值至少 1 GRAM 后计入邀请。待确认：{v0}。每 10 位有效好友获得一枚免费旋转币。距奖励还需：{v1}。"
+  "Друг засчитывается после достижения 2-го уровня в Telegram и пополнения от 1 ★. Ожидают подтверждения: {v0}. За каждые 10 подтверждённых друзей — фри спин коин. До награды: {v1}.": {
+    "en": "A friend qualifies at Telegram level 2 with at least 1 ★ deposited. Pending: {v0}. Every 10 qualified friends earns a free spin coin. Remaining: {v1}.",
+    "zh": "好友达到 Telegram 2 级且充值至少 1 ★ 后计入邀请。待确认：{v0}。每 10 位有效好友获得一枚免费旋转币。距奖励还需：{v1}。"
   },
   "Информация о стейкинге": {
     "en": "Staking information",
@@ -8708,8 +8722,8 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "zh": "你的余额："
   },
   "GRAM / сутки": {
-    "en": " GRAM / day",
-    "zh": " GRAM / 天"
+    "en": " ★ / day",
+    "zh": " ★ / 天"
   },
   "(любая модель)": {
     "en": " (any model)",
@@ -8736,8 +8750,8 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "zh": "所有玩家共同挑战首领。"
   },
   "GRAM принятых ставок = 1 HP урона. Множители: апгрейды ×": {
-    "en": " GRAM in accepted stakes = 1 HP damage. Multipliers: upgrades ×",
-    "zh": " GRAM 有效投注 = 1 点伤害。倍率：升级 ×"
+    "en": " ★ in accepted stakes = 1 HP damage. Multipliers: upgrades ×",
+    "zh": " ★ 有效投注 = 1 点伤害。倍率：升级 ×"
   },
   "ИСК": {
     "en": "ISK",
@@ -8795,13 +8809,13 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Choose where it goes",
     "zh": "选择存放方式"
   },
-  "На баланс: {amount} GRAM": {
-    "en": "Credit to balance: {amount} GRAM",
-    "zh": "计入余额：{amount} GRAM"
+  "На баланс: {amount} ★": {
+    "en": "Credit to balance: {amount} ★",
+    "zh": "计入余额：{amount} ★"
   },
-  "Доход стейкинга: {amount} GRAM в сутки от флора обычной шляпы": {
-    "en": "Staking income: {amount} GRAM per day, based on the standard hat floor",
-    "zh": "质押收益：每天 {amount} GRAM，按普通帽子的地板价计算"
+  "Доход стейкинга: {amount} ★ в сутки от флора обычной шляпы": {
+    "en": "Staking income: {amount} ★ per day, based on the standard hat floor",
+    "zh": "质押收益：每天 {amount} ★，按普通帽子的地板价计算"
   },
   "Стоимость шляпы зачислена на баланс": {
     "en": "The hat value has been credited to your balance",
@@ -8843,13 +8857,13 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Send a gift to @{account}. For hats, choose staking or balance.",
     "zh": "将礼物发送给 @{account}。帽子可选择质押或计入余额。"
   },
-  "Заработано с этой шляпы: {amount} GRAM": {
-    "en": "Earned with this hat: {amount} GRAM",
-    "zh": "这顶帽子已赚取：{amount} GRAM"
+  "Заработано с этой шляпы: {amount} ★": {
+    "en": "Earned with this hat: {amount} ★",
+    "zh": "这顶帽子已赚取：{amount} ★"
   },
-  "Доход в сутки: {amount} GRAM": {
-    "en": "Daily income: {amount} GRAM",
-    "zh": "每日收益：{amount} GRAM"
+  "Доход в сутки: {amount} ★": {
+    "en": "Daily income: {amount} ★",
+    "zh": "每日收益：{amount} ★"
   },
   "До возврата: {time}": {
     "en": "Available in: {time}",
@@ -8863,13 +8877,13 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "Send an NFT gift to @{account}. The minimum model price on Portals is used. Hats credited to balance receive +10%; Black and Onyx Black use the backdrop price. For a received hat, choose staking or balance. Regular inventory hats cannot be staked.",
     "zh": "将 NFT 礼物发送给 @{account}。按 Portals 上款式最低价估值。帽子计入余额时增加 10%；Black 和 Onyx Black 按背景价格估值。收到帽子后请选择质押或余额。普通背包中的帽子不能质押。"
   },
-  "На баланс (+10%): {amount} GRAM": {
-    "en": "Credit to balance (+10%): {amount} GRAM",
-    "zh": "计入余额（+10%）：{amount} GRAM"
+  "На баланс (+10%): {amount} ★": {
+    "en": "Credit to balance (+10%): {amount} ★",
+    "zh": "计入余额（+10%）：{amount} ★"
   },
-  "Стоимость шляпы в холде: {amount} GRAM": {
-    "en": "Hat value in staking: {amount} GRAM",
-    "zh": "质押帽子的价值：{amount} GRAM"
+  "Стоимость шляпы в холде: {amount} ★": {
+    "en": "Hat value in staking: {amount} ★",
+    "zh": "质押帽子的价值：{amount} ★"
   },
   "До {count} шляп в общем стейкинге включительно — {low}% в сутки; от {next} — {high}%. При смене ставки накопленный доход сохраняется.": {
     "en": "Up to {count} hats across all staking positions: {low}% daily; from {next}: {high}%. Rate changes preserve accrued income.",
@@ -8879,9 +8893,9 @@ html[data-econ] #coinChip .bal-plus{margin-left:6px;opacity:.95}
     "en": "The first {count} hats staked by all users combined earn {low}% daily. From hat {next}, the rate is {high}%. The limit is shared across the entire site, not per user. New deposits do not reduce the rate of the first {count} hats.",
     "zh": "所有用户合计最先存入质押的 {count} 顶帽子享受每日 {low}% 的收益。从第 {next} 顶起为 {high}%。此限额由全站用户共享，并非每人独立计算。后续存入不会降低前 {count} 顶帽子的收益率。"
   },
-  "Доход в сутки: {amount} GRAM · {percent}%": {
-    "en": "Daily income: {amount} GRAM · {percent}%",
-    "zh": "每日收益：{amount} GRAM · {percent}%"
+  "Доход в сутки: {amount} ★ · {percent}%": {
+    "en": "Daily income: {amount} ★ · {percent}%",
+    "zh": "每日收益：{amount} ★ · {percent}%"
   },
   "В стейкинг можно отправить только шляпу, поступившую при пополнении. Для неё нужно выбрать: стейкинг или зачисление стоимости на баланс. Шляпы из обычного инвентаря не принимаются. Доход рассчитывается от флора обычной шляпы, независимо от модели и фона. Ставка каждой шляпы указана в её карточке. Первые 3 дня шляпа заморожена. После возврата в инвентарь — ещё 3 дня без продажи и вывода. Повторное внесение из инвентаря недоступно. Доход начисляется постепенно, без капитализации.": {
     "en": "Only newly deposited hats can be staked. Choose staking or crediting their value to your balance. Hats from regular inventory cannot be staked. Income is based on the ordinary hat collection floor, regardless of model or backdrop. Each hat’s rate is shown in its details. Hats are locked for the first 3 days. After returning to inventory, selling and withdrawal are locked for another 3 days. Returned hats cannot be staked again. Income accrues gradually without compounding.",
@@ -9157,7 +9171,7 @@ function showMaintenance(msg) {
 }
 
 const fmt = (n, d = 4) => Number(n).toFixed(d).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') || '0'; // trim zeros only after the decimal point (300 stays 300)
-// GRAM amounts: from 1 GRAM at most one decimal, cut not rounded (647.18 -> 647.1, 647.04 -> 647); below 1 keep two significant digits so small sums never show as 0
+// ★ amounts: from 1 ★ at most one decimal, cut not rounded (647.18 -> 647.1, 647.04 -> 647); below 1 keep two significant digits so small sums never show as 0
 const fmtG = (n) => { n = Number(n) || 0; const a = Math.abs(n); if (a >= 1) return fmt(Math.trunc(Math.round(n * 1e6) / 1e5) / 10, 1); if (!a) return '0'; return fmt(n, Math.min(8, 1 - Math.floor(Math.log10(a)))); };
 const shortAddr = (a) => (a && a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}` : a || '');
 
@@ -9353,7 +9367,7 @@ function tierMeta(cfg) {
     return {
       chances: base.map((m) => ({ chance: m.chance, cost_ton: giftCost(selectedGift.price_ton, m.chance) })),
       default_chance: cfg.default_chance,
-      prize_name: `${selectedGift.name} · ${fmtG(selectedGift.price_ton)} GRAM`,
+      prize_name: `${selectedGift.name} · ${fmtG(selectedGift.price_ton)} ★`,
     };
   }
   const t = cfg.tiers && cfg.tiers[currentTier === 'gift' ? 'random' : currentTier];
@@ -9559,7 +9573,7 @@ function gpTile(key, name, price, image, active, fallback) {
   n.textContent = name;
   const p = document.createElement('span');
   p.className = 'gp-price';
-  p.textContent = `${fmtG(price)} GRAM`;
+  p.textContent = `${fmtG(price)} ★`;
   b.append(img, n, p);
   return b;
 }
@@ -9594,7 +9608,7 @@ function gpHatTile(key, active) {
   const p = document.createElement('span');
   p.className = 'gp-price';
   const value = state && state.config && state.config.tiers && state.config.tiers[tier] && state.config.tiers[tier].value_ton;
-  p.textContent = value ? `${fmtG(value)} GRAM` : HAT_TIER_LABEL[tier];
+  p.textContent = value ? `${fmtG(value)} ★` : HAT_TIER_LABEL[tier];
   b.append(img, n, p);
   return b;
 }
@@ -10091,18 +10105,18 @@ function renderProgress(s) {
     $('lvlFill').style.width = `${Math.round(lv.progress * 100)}%`;
     const left = Math.max(0, lv.next_ton - lv.turnover_ton);
     $('lvlNote').textContent = lv.max ? tr('Уровень {level} — MAX. Это максимальный уровень', { level: lv.level })
-      : tr('До уровня {level}: ещё {left} GRAM оборота', { level: lv.level + 1, left: fmt(left, 2) });
+      : tr('До уровня {level}: ещё {left} ★ оборота', { level: lv.level + 1, left: fmt(left, 2) });
   }
   const st = s.stats;
   if (st) {
-    $('statWithdrawn').textContent = `${fmtG(st.withdrawn_ton)} GRAM`;
+    $('statWithdrawn').textContent = `${fmtG(st.withdrawn_ton)} ★`;
     $('statWithdrawnCount').textContent =
       tn(st.withdrawn_count, 'prize');
-    $('statTurnover').textContent = `${fmtG(st.turnover_ton)} GRAM`;
+    $('statTurnover').textContent = `${fmtG(st.turnover_ton)} ★`;
     $('statGames').textContent = tn(st.games, 'game');
     const img = $('statBestImg');
     if (st.best) {
-      $('statBestValue').textContent = `${fmtG(st.best.value_ton)} GRAM`;
+      $('statBestValue').textContent = `${fmtG(st.best.value_ton)} ★`;
       $('statBestName').textContent = trName(st.best.name);
       const isGift = String(st.best.tier).startsWith('gift:');
       const src = st.best.image || hatAsset(st.best.tier);
@@ -10150,7 +10164,7 @@ async function sellAll() {
     renderPrizes(res.prizes);
     updateSpinButton();
     toast(res.count
-      ? tr('Продано {n} шт. на {sum} GRAM', { n: res.count, sum: fmtG(res.payout_ton) })
+      ? tr('Продано {n} шт. на {sum} ★', { n: res.count, sum: fmtG(res.payout_ton) })
       : tr('Продавать нечего'), !res.count, 3200);
     haptic('notification', res.count ? 'success' : 'error');
   } catch (e) {
@@ -10181,7 +10195,7 @@ async function activatePromo(e) {
     if (r.prizes) { state.prizes = r.prizes; renderPrizes(r.prizes); }
     if (r.weapons) setOwnedWeapons(r.weapons);
     if(r.state)renderState(r.state);
-    toast(r.rewards ? tr('Получено')+': '+r.rewards.map(reward=>reward.name).join(', ') : r.gift ? `Получен подарок: ${r.gift}` : tr('Промокод активирован: +{sum} GRAM', { sum: fmtG(r.amount_ton) }));
+    toast(r.rewards ? tr('Получено')+': '+r.rewards.map(reward=>reward.name).join(', ') : r.gift ? `Получен подарок: ${r.gift}` : tr('Промокод активирован: +{sum} ★', { sum: fmtG(r.amount_ton) }));
     haptic('notification', 'success');
   } catch (err) {
     const messages = {
@@ -10226,7 +10240,7 @@ function renderReferral(ref) {
   $('refCount').textContent = ref.count;
   $('refCountLabel').textContent = tn(ref.count, 'referral', true);
   $('refEarned').textContent = fmtG(ref.earned_ton);
-  $('refBalance').textContent = `${fmtG(ref.balance_ton)} GRAM`;
+  $('refBalance').textContent = `${fmtG(ref.balance_ton)} ★`;
 
   const canWithdraw = ref.balance_ton + 1e-9 >= ref.min_withdraw_ton;
   $('refWithdrawBtn').disabled = !canWithdraw;
@@ -10234,10 +10248,10 @@ function renderReferral(ref) {
 
   const hint = $('refHint');
   if (ref.pending_ton > 0) {
-    hint.textContent = tr('В обработке: {sum} GRAM', { sum: fmtG(ref.pending_ton) });
+    hint.textContent = tr('В обработке: {sum} ★', { sum: fmtG(ref.pending_ton) });
     hint.classList.add('pending');
   } else {
-    hint.textContent = tr('Вывод от {sum} GRAM', { sum: fmtG(ref.min_withdraw_ton) });
+    hint.textContent = tr('Вывод от {sum} ★', { sum: fmtG(ref.min_withdraw_ton) });
     hint.classList.remove('pending');
   }
 }
@@ -10290,7 +10304,7 @@ async function withdrawReferral() {
     haptic('notification', 'success');
   } catch (e) {
     toast(e.code === 'below_minimum'
-      ? tr('Минимум для вывода — {sum} GRAM', { sum: fmtG(state?.referral?.min_withdraw_ton ?? 1) })
+      ? tr('Минимум для вывода — {sum} ★', { sum: fmtG(state?.referral?.min_withdraw_ton ?? 1) })
       : tr('Не удалось создать заявку'), true);
     refresh();
   }
@@ -10426,7 +10440,7 @@ function buildPrizeCard(p) {
   thumb.appendChild(img);
   if (p.sell_ton !== undefined) {
     const value = document.createElement('span');
-    value.className = 'prize-value'; value.textContent = `${fmtG(p.value_ton ?? p.sell_ton)} GRAM`;
+    value.className = 'prize-value'; value.textContent = `${fmtG(p.value_ton ?? p.sell_ton)} ★`;
     value.setAttribute('aria-label', tr('Цена'));
     thumb.appendChild(value);
   }
@@ -10519,7 +10533,7 @@ async function openHistory() {
     const res = document.createElement('b');
     res.textContent = r.win ? tr('Выигрыш') : r.bear ? `${tr('Мимо')}` : tr('Мимо');
     const cost = document.createElement('small');
-    if(r.kind==='free_spin'||r.free){cost.textContent='−1 ';const coin=document.createElement('img');coin.src='/static/free-coins/coin.png';coin.alt='фри спин коин';coin.className='hist-coin';cost.append(coin)}else cost.textContent = `−${fmtG(r.cost_ton)} GRAM`;
+    if(r.kind==='free_spin'||r.free){cost.textContent='−1 ';const coin=document.createElement('img');coin.src='/static/free-coins/coin.png';coin.alt='фри спин коин';coin.className='hist-coin';cost.append(coin)}else cost.textContent = `−${fmtG(r.cost_ton)} ★`;
     right.append(res, cost);
     row.append(img, mid, right);
     list.appendChild(row);
@@ -10649,7 +10663,7 @@ function showView(name) {
 
 let shopCache = null;
 let shopBusy = false;
-function shopPriceLabel(o) { return o.price <= 0 ? tr('Бесплатно') : o.currency === 'hatcoin' ? `${+o.price.toFixed(4)} HatCoin` : `${fmtG(o.price)} GRAM`; }
+function shopPriceLabel(o) { return o.price <= 0 ? tr('Бесплатно') : o.currency === 'hatcoin' ? `${+o.price.toFixed(4)} HatCoin` : `${fmtG(o.price)} ★`; }
 function renderShop(container, status) {
   const mk = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt !== undefined) e.textContent = txt; return e; };
   if (!shopCache) { status.hidden = false; status.textContent = tr('Загружаем лавку…'); return; }
@@ -10869,7 +10883,7 @@ async function loadKostyanQuests(force = false) {
 
 const TOUR_ALL = [
   { pose: 'wave', text: 'Здарова! Я Костян, хозяин этой лавки. Давай коротко покажу, что тут есть.' },
-  { pose: 'shop', sel: '.kq-tab[data-tab="shop"]', filter: 'shop', text: 'Магазин. Тут я меняю товары на HatCoin и GRAM: оружие, подарки, NFT. Некоторых ордеров мало, так что не зевай.' },
+  { pose: 'shop', sel: '.kq-tab[data-tab="shop"]', filter: 'shop', text: 'Магазин. Тут я меняю товары на HatCoin и ★: оружие, подарки, NFT. Некоторых ордеров мало, так что не зевай.' },
   { pose: 'cheer', sel: '.kq-tab[data-tab="achievements"]', filter: 'achievements', text: 'Достижения. Выполняй условия и забирай награды. Обычные остаются навсегда, а ивентовые — до завершения ивента.' },
   { pose: 'point', sel: '.kq-tab[data-tab="quests"]', filter: 'quests', text: 'Квесты. Задания со сроком: успей выполнить до конца таймера и забирай награду.' },
 ];
@@ -10946,7 +10960,7 @@ let lbLoadedAt = 0;
 let lbLoading = false;
 
 function fmtTon(v) {
-  return `${fmtG(v)} GRAM`;
+  return `${fmtG(v)} ★`;
 }
 
 function setProfileAvatar(url) {
@@ -11132,7 +11146,7 @@ function openBossRules(){
  const data=lbBossData;if(!data)return;const box=$('bossInfoContent');box.replaceChildren();
  const paragraph=text=>{const p=document.createElement('p');p.textContent=text;box.appendChild(p)};
  paragraph(tr('Все игроки вместе бьют босса.'));
- paragraph(tr('{n} GRAM = 1 HP урона.',{n:fmt(data.boss.ton_per_hp,2)}));
+ paragraph(tr('{n} ★ = 1 HP урона.',{n:fmt(data.boss.ton_per_hp,2)}));
  paragraph(tr('Чем больше урона, тем выше место в топе.'));
  paragraph(tr('Если время выйдет и босс не будет побеждён, награды не выдаются.'));
  const prizes=Object.entries(data.prizes||{});
@@ -11192,7 +11206,7 @@ function renderLevelGrid() {
     const b = document.createElement('b');
     b.textContent = tr('Уровень {n}', { n });
     const small = document.createElement('small');
-    small.textContent = `${fmtG(row.need)} GRAM`;
+    small.textContent = `${fmtG(row.need)} ★`;
     cell.append(b, small);
     if (ready) cell.onclick = () => claimLevelReward(n);
     grid.appendChild(cell);
@@ -11416,7 +11430,7 @@ function cxUpdateButton() {
   if (cxRound) {
     const k = cxRound.opened.length;
     btn.disabled = cxBusy || !k;
-    btn.textContent = k ? tr('Забрать {sum} GRAM', { sum: fmt(cxRound.bet * cxRound.mult, 2) }) : tr(activeEventKey() === 'halloween' ? 'Сдвинь крышку' : 'Открой сундук');
+    btn.textContent = k ? tr('Забрать {sum} ★', { sum: fmt(cxRound.bet * cxRound.mult, 2) }) : tr(activeEventKey() === 'halloween' ? 'Сдвинь крышку' : 'Открой сундук');
     dep.hidden = true;
     return;
   }
@@ -11427,13 +11441,13 @@ function cxUpdateButton() {
   dep.hidden = true;
   if (bet < cfg.min_bet || bet > cfg.max_bet) {
     enough = false;
-    label = tr('Ставка {min}–{max} GRAM', { min: fmt(cfg.min_bet, 2), max: fmt(cfg.max_bet, 0) });
+    label = tr('Ставка {min}–{max} ★', { min: fmt(cfg.min_bet, 2), max: fmt(cfg.max_bet, 0) });
   } else if (state.balance_ton + 1e-9 < bet) {
     enough = false;
     label = tr('Не хватает на игру');
     dep.hidden = false;
   } else {
-    label = tr('Играть за {sum} GRAM', { sum: fmt(bet, 2) });
+    label = tr('Играть за {sum} ★', { sum: fmt(bet, 2) });
   }
   btn.disabled = cxBusy || !enough;
   btn.textContent = cxBusy ? tr('Идёт игра…') : label;
@@ -11574,7 +11588,7 @@ function cxFail(e) {
   if (c === 'round_active' && e.data && e.data.round) { cxRound = e.data.round; cxEnd = null; cxSetHint(tr(activeEventKey() === 'halloween' ? 'Раунд идёт — сдвигай крышки' : 'Раунд идёт — открывай сундуки')); return; }
   if (c === 'no_round') { cxRound = null; refresh(); cxSetHint(tr('Раунд уже закончился'), 'lose'); return; }
   if (c === 'insufficient_funds') { refresh(); openDeposit(); return; }
-  if (c === 'bad_bet') { toast(tr('Ставка {min}–{max} GRAM', { min: fmtG(e.data.min_ton), max: fmtG(e.data.max_ton) }), true); return; }
+  if (c === 'bad_bet') { toast(tr('Ставка {min}–{max} ★', { min: fmtG(e.data.min_ton), max: fmtG(e.data.max_ton) }), true); return; }
   toast(tr('Ошибка запроса'), true);
 }
 
@@ -11607,11 +11621,11 @@ async function cxStart() {
 function cxShowWin(res) {
   const g = res.gift;
   const img = $('cxWinImg');
-  if (g) setGiftImg(img, g.image || hatAsset(g.tier), 'images/gram-px.png');
-  else img.src = 'images/gram-px.png';
+  if (g) setGiftImg(img, g.image || hatAsset(g.tier), 'images/star-px.png');
+  else img.src = 'images/star-px.png';
   $('cxWinGift').textContent = g ? `${trName(g.name)} · ${tr('в профиле')}` : `x${fmt(res.mult, 2)}`;
   const added = g ? res.ton_part : res.payout_ton;
-  $('cxWinSum').textContent = `+${fmt(added, 2)} GRAM`;
+  $('cxWinSum').textContent = `+${fmt(added, 2)} ★`;
   $('cxWinModal').hidden = false;
 }
 
@@ -11628,9 +11642,9 @@ function cxFinish(res) {
     haptic('notification', 'success');
     window.GameAudio?.effect(activeEventKey() === 'halloween' ? 'reveal' : 'success');
     if (res.gift) {
-      cxSetHint(`${trName(res.gift.name)} + ${fmt(res.ton_part, 2)} GRAM · x${fmt(res.mult, 2)}`, 'win');
+      cxSetHint(`${trName(res.gift.name)} + ${fmt(res.ton_part, 2)} ★ · x${fmt(res.mult, 2)}`, 'win');
     } else {
-      cxSetHint(tr('+{sum} GRAM · x{mult}', { sum: fmtG(res.payout_ton), mult: fmt(res.mult, 2) }), 'win');
+      cxSetHint(tr('+{sum} ★ · x{mult}', { sum: fmtG(res.payout_ton), mult: fmt(res.mult, 2) }), 'win');
     }
     const r = $('cxGrid').getBoundingClientRect();
     const st = document.querySelector('.stage').getBoundingClientRect();
@@ -12426,7 +12440,7 @@ function rewardBlock(title, reward, need, have, total, claimed, type, id) {
   const box = document.createElement('div'); box.className = 'cz-reward';
   const txt = document.createElement('div');
   const h = document.createElement('b'); h.textContent = tr(title);
-  const r = document.createElement('span'); r.className = 'cz-rw'; r.textContent = `${fmtG(reward)} GRAM`;
+  const r = document.createElement('span'); r.className = 'cz-rw'; r.textContent = `${fmtG(reward)} ★`;
   const sub = document.createElement('small');
   sub.textContent = total ? `${tr('Нужно')} ${need} ${tr('из')} ${total} (${Math.round(100 * need / total)}%) · ${tr('у вас')} ${have}` : `${tr('Нужно')} ${need} · ${tr('у вас')} ${have}`;
   txt.append(h, r, sub);
@@ -12933,8 +12947,8 @@ function sellToast(payout) {
   sellTally.n += 1;
   sellTally.sum += payout;
   toast(sellTally.n > 1
-    ? tr('Продано {n} шт. на {sum} GRAM', { n: sellTally.n, sum: fmt(sellTally.sum, 2) })
-    : tr('Продано за {sum} GRAM', { sum: fmt(payout, 2) }));
+    ? tr('Продано {n} шт. на {sum} ★', { n: sellTally.n, sum: fmt(sellTally.sum, 2) })
+    : tr('Продано за {sum} ★', { sum: fmt(payout, 2) }));
   clearTimeout(sellTally.timer);
   sellTally.timer = setTimeout(() => { sellTally.n = 0; sellTally.sum = 0; }, 2600);
 }
@@ -13017,11 +13031,11 @@ async function withdraw(prizeId, btn, feeTon = 0) {
   btn.textContent = chatLabel;
   if (feeTon > 0) {
     if ((state?.balance_ton ?? 0) < feeTon) {
-      toast(tr('Вывод этого подарка стоит {sum} GRAM — не хватает на балансе', { sum: fmt(feeTon, 2) }), true);
+      toast(tr('Вывод этого подарка стоит {sum} ★ — не хватает на балансе', { sum: fmt(feeTon, 2) }), true);
       return;
     }
     const ok = await confirmDialog(
-      tr('Вывод этого подарка стоит {sum} GRAM — спишется с баланса. Вывести?', { sum: fmt(feeTon, 2) }));
+      tr('Вывод этого подарка стоит {sum} ★ — спишется с баланса. Вывести?', { sum: fmt(feeTon, 2) }));
     if (!ok) return;
   }
   const label = btn.textContent;
@@ -13047,7 +13061,7 @@ async function withdraw(prizeId, btn, feeTon = 0) {
     }
     toast(e.code === 'already_requested' ? tr('Заявка уже создана')
       : e.code === 'withdraw_locked' ? tr('Вывод откроется через срок после пополнения подарком')
-        : e.code === 'no_funds_fee' ? tr('Вывод этого подарка стоит {sum} GRAM — не хватает на балансе', { sum: fmt(feeTon, 2) })
+        : e.code === 'no_funds_fee' ? tr('Вывод этого подарка стоит {sum} ★ — не хватает на балансе', { sum: fmt(feeTon, 2) })
           : e.code === 'fee_changed' ? tr('Плата за вывод изменилась — попробуй ещё раз')
             : tr('Не удалось создать заявку'), true);
     btn.disabled = false;
@@ -13149,7 +13163,7 @@ async function sendDeposit() {
 
   const amount = parseFloat($('depositAmount').value);
   if (!(amount > 0) || amount < state.config.min_deposit_ton) {
-    toast(tr('Минимум {sum} GRAM', { sum: fmtG(state.config.min_deposit_ton) }), true);
+    toast(tr('Минимум {sum} ★', { sum: fmtG(state.config.min_deposit_ton) }), true);
     return;
   }
 
@@ -13235,7 +13249,7 @@ function openStarsInvoice(url) {
 async function payStars() {
   if (!starsCfg || !starsCfg.enabled) return;
   const amount = parseFloat($('starsAmount').value);
-  if (!(amount >= starsCfg.min_ton)) { toast(tr('Минимум {sum} GRAM', { sum: fmtG(starsCfg.min_ton) }), true); return; }
+  if (!(amount >= starsCfg.min_ton)) { toast(tr('Минимум {sum} ★', { sum: fmtG(starsCfg.min_ton) }), true); return; }
   const btn = $('starsPayBtn');
   btn.disabled = true;
   starsStatus('');
@@ -13251,7 +13265,7 @@ async function payStars() {
       try { st = await api('/api/stars/deposit/status', { order_id: order.order_id }); } catch (e) { continue; }
       if (st.status === 'credited') {
         $('depositModal').hidden = true;
-        toast(tr('Зачислено {sum} GRAM', { sum: fmt(order.amount, 2) }));
+        toast(tr('Зачислено {sum} ★', { sum: fmt(order.amount, 2) }));
         haptic('notification', 'success');
         refresh();
         return;
@@ -13282,7 +13296,7 @@ async function checkCrypto(quiet) {
       const amount = cryptoOrder.amount;
       cryptoOrder = null;
       $('depositModal').hidden = true;
-      toast(tr('Зачислено {sum} GRAM', { sum: fmt(amount, 2) }));
+      toast(tr('Зачислено {sum} ★', { sum: fmt(amount, 2) }));
       haptic('notification', 'success');
       refresh();
       return true;
@@ -13296,7 +13310,7 @@ async function checkCrypto(quiet) {
 async function payCrypto() {
   if (!cryptoCfg || !cryptoCfg.enabled) return;
   const amount = parseFloat($('cryptoAmount').value);
-  if (!(amount >= cryptoCfg.min_ton)) { toast(tr('Минимум {sum} GRAM', { sum: fmtG(cryptoCfg.min_ton) }), true); return; }
+  if (!(amount >= cryptoCfg.min_ton)) { toast(tr('Минимум {sum} ★', { sum: fmtG(cryptoCfg.min_ton) }), true); return; }
   const btn = $('cryptoPayBtn');
   btn.disabled = true;
   cryptoStatus('');
@@ -13335,7 +13349,7 @@ async function openGiftDeposit() {
   $('giftModal').hidden = false;
   $('giftHow').hidden = true;
   giftPicked = null;
-  $('giftIntro').textContent = tr('Отправь подарок на @{account} — получишь GRAM на баланс', { account: giftCfg.account });
+  $('giftIntro').textContent = tr('Отправь подарок на @{account} — получишь ★ на баланс', { account: giftCfg.account });
   const list = $('giftList');
   list.replaceChildren();
   const loading = document.createElement('p');
@@ -13389,7 +13403,7 @@ function giftCard(g) {
   if (g.credit_ton) {
     const ton = document.createElement('img'); ton.loading = 'lazy';
     ton.className = 'ton-ico';
-    ton.src = 'images/gram-px.png';
+    ton.src = 'images/star-px.png';
     ton.alt = 'GRAM';
     val.append(`${tr('от')} ${fmtG(g.credit_ton)}`, ton);
   } else {
@@ -13407,7 +13421,7 @@ function pickGift(g, card) {
   how.hidden = false;
   const hatGift = /witch\s*hat/i.test(`${g.title || ''} ${g.collection || ''} ${g.slug || ''}`);
   $('giftHowText').textContent = g.auto && g.credit_ton
-    ? tr('Передай подарок данной коллекции на @{account}, чтобы получить {sum} GRAM', { account: giftCfg.account, sum: fmtG(g.credit_ton) })
+    ? tr('Передай подарок данной коллекции на @{account}, чтобы получить {sum} ★', { account: giftCfg.account, sum: fmtG(g.credit_ton) })
       + (hatGift ? ' ' + tr('или положить его в стейкинг') : '') + '.'
     : tr('Передай подарок на @{account} — его оценит админ, бот пришлёт сообщение с суммой.', { account: giftCfg.account });
   $('giftOpenAccount').textContent = tr('Открыть @{account}', { account: giftCfg.account });
@@ -13434,7 +13448,7 @@ function refresh() {
       renderState(s);
     } catch (e) {
       console.error('State refresh failed:', e);
-      toast((e.message === 'HTTP 401' || e.message === 'no initData') ? tr('Откройте приложение через бота') : tr('Нет связи с сервером') + ' [' + String(e.message || e).slice(0, 60) + ']', true, 9000);
+      if (e.message !== 'maintenance') toast((e.message === 'HTTP 401' || e.message === 'no initData') ? tr('Откройте приложение через бота') : tr('Нет связи с сервером') + ' [' + String(e.message || e).slice(0, 60) + ']', true, 9000);
     } finally {
       clearTimeout(timeout);
       refreshPending = null;
@@ -13621,7 +13635,7 @@ let coinCount=1,coinBatch=null;
 let coinBusy=false,coinRequest='',receiptShown='',bossPollBusy=false,lastPersonalDamage=0,lastBossId='';
 function progressionUI(){
  const markup=`<div id="freeCoinModal" class="modal" hidden><div class="modal-card coin-card"><button type="button" class="ghost coin-x" id="coinClose" aria-label="Закрыть"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" shape-rendering="crispEdges"><path d="M1 1h2v2H1zM3 3h2v2H3zM5 5h2v2H5zM7 7h2v2H7zM9 9h2v2H9zM9 1h2v2H9zM7 3h2v2H7zM3 7h2v2H3zM1 9h2v2H1z" fill="currentColor"/></svg></button><h2>Шляпа <small class="coin-caption">(Free Spin)</small></h2><p class="coin-balance" aria-label="Фри спин коины"><span>Фри спин коины:</span><b id="coinBalance">0</b> <img loading="lazy" decoding="async" src="/static/free-coins/coin.png" alt=""></p><div class="coin-viewport" id="coinViewport"><div class="coin-track" id="coinTrack"></div><i class="coin-marker top"></i><i class="coin-marker bottom"></i></div><label class="coin-fast">Быстрый прокрут<input id="coinFast" type="checkbox" role="switch"><span aria-hidden="true"></span></label><div class="coin-quantity"><span>Прокрутов</span><div><button id="coinMinus" type="button" aria-label="Меньше прокрутов">−</button><output id="coinCount">1</output><button id="coinPlus" type="button" aria-label="Больше прокрутов">+</button></div></div><p id="coinStatus" role="status"></p><button class="cta" id="coinSpin">Крутить · 1 <img loading="lazy" decoding="async" src="/static/free-coins/coin.png" alt="Free Spin Coin"></button></div></div><div id="coinResultModal" class="modal" hidden><div class="modal-card coin-card"><h2 id="coinResultTitle"></h2><img loading="lazy" decoding="async" id="coinResultImage" class="coin-result-image" alt=""><p id="coinResultText"></p><div id="coinResultAwards"></div><button class="cta" id="coinResultClose">Продолжить</button></div></div><div id="tournamentReceiptModal" class="modal" hidden><div class="modal-card coin-card"><h2 id="receiptTitle"></h2><p id="receiptPlace"></p><div id="receiptAwards"></div><p id="receiptNote"></p><button class="cta" id="receiptClaim">Забрать</button></div></div>`;
- document.body.insertAdjacentHTML('beforeend',markup+`<div id="depositNoticeModal" class="modal" hidden><div class="modal-card coin-card"><h2>Баланс обновлён</h2><img loading="lazy" decoding="async" class="deposit-notice-icon" src="/images/gram-px.png" alt=""><p id="depositNoticeSource"></p><b id="depositNoticeAmount"></b><p id="depositNoticeBonus"></p><p id="depositNoticeBalance"></p><button class="cta" id="depositNoticeClose">Понятно</button></div></div>`);
+ document.body.insertAdjacentHTML('beforeend',markup+`<div id="depositNoticeModal" class="modal" hidden><div class="modal-card coin-card"><h2>Баланс обновлён</h2><img loading="lazy" decoding="async" class="deposit-notice-icon" src="/images/star-px.png" alt=""><p id="depositNoticeSource"></p><b id="depositNoticeAmount"></b><p id="depositNoticeBonus"></p><p id="depositNoticeBalance"></p><button class="cta" id="depositNoticeClose">Понятно</button></div></div>`);
  $('depositNoticeClose').onclick=async()=>{if(depositNoticeBusy)return;depositNoticeBusy=true;$('depositNoticeClose').disabled=true;try{const result=await api('/api/deposits/notice/read',{id:depositNoticeShown});state.deposit_notices=result.deposit_notices;depositNoticeShown='';$('depositNoticeModal').hidden=true;showDepositNotice(state.deposit_notices)}catch(_){toast('Не удалось подтвердить. Повторите ещё раз.')}finally{depositNoticeBusy=false;$('depositNoticeClose').disabled=false}};
  addEventListener('resize',()=>{if(!$('freeCoinModal').hidden&&$('coinTrack').children.length>55){const cell=$('coinTrack').children[55];$('coinTrack').style.transition='none';$('coinTrack').style.transform=`translate3d(${-cell.offsetLeft-cell.offsetWidth/2+$('coinViewport').clientWidth/2}px,0,0)`}});
  $('coinClose').onclick=()=>{if(!coinBusy)$('freeCoinModal').hidden=true};
@@ -13639,7 +13653,7 @@ function progressionUI(){
  const hud=document.createElement('div');hud.id='bossLiveHud';hud.hidden=true;hud.innerHTML='<div class="boss-live-title"><span id="bossLiveName"></span><span id="bossLiveHp"></span></div><div class="boss-live-track" role="progressbar" aria-label="HP босса"><i id="bossLiveFill"></i></div><small id="bossLiveDamage" aria-live="polite"></small>';$('view-upgrade').prepend(hud);
  const originalRender=renderState;renderState=function(s){originalRender(s);renderProgression(s)};
  const originalPicker=renderGiftPicker;renderGiftPicker=function(){originalPicker();if(gpModels)return;const button=document.createElement('button');button.type='button';button.className='gp-item gp-free-coins';button.innerHTML='<img loading="lazy" decoding="async" src="images/hatcoin.png" alt=""><span>Шляпа<small class="coin-caption">Free spin</small></span>';button.onclick=e=>{e.stopPropagation();$('giftPickModal').hidden=true;openCoins()};$('gpList').prepend(button)};
- const originalReferral=renderReferral;renderReferral=function(ref){originalReferral(ref);$('refCodeBenefits').textContent=`${ref.code_benefits?.spin_count||0} фри спин коин · +${ref.code_benefits?.deposit_percent||0}% к первому пополнению`;$('refQualification').textContent=`Друг засчитывается после достижения 2-го уровня в Telegram и пополнения от 1 GRAM. Ожидают подтверждения: ${ref.pending||0}. За каждые 10 подтверждённых друзей — фри спин коин. До награды: ${10-(ref.milestone_progress||0)}.`;$('refVerify').hidden=!ref.invited};
+ const originalReferral=renderReferral;renderReferral=function(ref){originalReferral(ref);$('refCodeBenefits').textContent=`${ref.code_benefits?.spin_count||0} фри спин коин · +${ref.code_benefits?.deposit_percent||0}% к первому пополнению`;$('refQualification').textContent=`Друг засчитывается после достижения 2-го уровня в Telegram и пополнения от 1 ★. Ожидают подтверждения: ${ref.pending||0}. За каждые 10 подтверждённых друзей — фри спин коин. До награды: ${10-(ref.milestone_progress||0)}.`;$('refVerify').hidden=!ref.invited};
  setInterval(pollBoss,3000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollBoss()});
 }
 function coinLockText(){return ''}      // the coins are open from the first level: nothing locks them any more
@@ -13720,7 +13734,7 @@ function renderProgression(s){if(!$('coinBalance'))return;coinControls();renderL
 function renderLiveBoss(boss){$('bossLiveHud').hidden=!boss||boss.status==='cancelled'||boss.status==='expired';if(!boss)return;const hp=Math.max(0,boss.remaining_hp??boss.hp-boss.damage);$('bossLiveName').textContent=boss.name;$('bossLiveHp').textContent=`${fmt(hp,2)} / ${fmt(boss.hp,2)} HP`;$('bossLiveFill').style.width=(boss.hp?hp/boss.hp*100:0)+'%';const bar=$('bossLiveHud').querySelector('[role=progressbar]');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax',boss.hp);bar.setAttribute('aria-valuenow',hp);const halloween=document.documentElement.dataset.halloween==='on';if(halloween){if(lastBossId===boss.id&&window.lastBossHp!=null&&hp<window.lastBossHp-1e-6&&window.bossLiveHit)window.bossLiveHit(window.lastBossHp-hp,hp,boss.hp);$('bossLiveDamage').textContent=boss.defeated?'Босс повержен':''}else{if(lastBossId===boss.id&&boss.personal_damage>lastPersonalDamage)$('bossLiveDamage').textContent='Урон по боссу: −'+fmt(boss.personal_damage-lastPersonalDamage,2)+' HP';if(boss.defeated)$('bossLiveDamage').textContent='Босс повержен'}window.lastBossHp=hp;lastBossId=boss.id;lastPersonalDamage=boss.personal_damage||0}
 function showReceipt(rows){if(receiptShown||coinBusy||document.querySelector('.modal:not([hidden])'))return;const row=rows[0];if(!row)return;receiptShown=row.id;$('receiptTitle').textContent=row.mode==='boss'?(row.victory?'Босс побеждён!':'Время вышло'):row.name;$('receiptPlace').textContent='Ваше место: '+row.place;$('receiptAwards').replaceChildren();for(const award of row.awards||[]){const card=document.createElement('div');card.className='receipt-award';if(award.image){const image=document.createElement('img');image.src=award.image;image.alt='';card.append(image)}const label=document.createElement('span');label.textContent=(award.amount!=null?'+'+award.amount+' ':'')+award.name;card.append(label);$('receiptAwards').append(card)}$('receiptNote').textContent=!row.victory?'К сожалению, босса не успели победить. Награды не выдаются.':row.awards?.length?'Награды получены: подарки — в инвентаре, монеты — на балансе.':'Спасибо за участие!';$('receiptClaim').textContent=row.awards?.length?'Забрать':'Понятно';$('tournamentReceiptModal').hidden=false}
 async function pollBoss(){if(document.hidden||bossPollBusy||!state)return;bossPollBusy=true;try{const r=await api('/api/boss/status');Object.assign(state,r);renderProgression(state)}catch(_){}finally{bossPollBusy=false}}
-function showDepositNotice(rows){if(depositNoticeShown||coinBusy||spinning||cxBusy||document.querySelector('.modal:not([hidden])'))return;const row=rows[0];if(!row)return;depositNoticeShown=row.id;$('depositNoticeSource').textContent=row.label;$('depositNoticeAmount').textContent='+'+fmt(row.amount,2)+' GRAM';$('depositNoticeBonus').textContent=row.bonus?'Бонус промокода: +'+fmt(row.bonus,2)+' GRAM':'';$('depositNoticeBonus').hidden=!row.bonus;$('depositNoticeBalance').textContent='Ваш баланс: '+fmt(row.balance,2)+' GRAM';$('depositNoticeModal').hidden=false;haptic('notification','success')}
+function showDepositNotice(rows){if(depositNoticeShown||coinBusy||spinning||cxBusy||document.querySelector('.modal:not([hidden])'))return;const row=rows[0];if(!row)return;depositNoticeShown=row.id;$('depositNoticeSource').textContent=row.label;$('depositNoticeAmount').textContent='+'+fmt(row.amount,2)+' ★';$('depositNoticeBonus').textContent=row.bonus?'Бонус промокода: +'+fmt(row.bonus,2)+' ★':'';$('depositNoticeBonus').hidden=!row.bonus;$('depositNoticeBalance').textContent='Ваш баланс: '+fmt(row.balance,2)+' ★';$('depositNoticeModal').hidden=false;haptic('notification','success')}
 progressionUI();
 
 
@@ -13815,7 +13829,7 @@ async function stakingAction(action,prize){
   stakingRequests.delete(signature);if(state)renderState({...state,...r});
   $('stakingAddModal').hidden=true;
   $('stakingDepositModal').hidden=true;
-  toast(action==='add'?'Шляпа добавлена в стейкинг на 3 дня':action==='deposit/balance'?'Стоимость шляпы зачислена на баланс':action==='remove'?'Шляпа возвращена в инвентарь. Продать можно сразу, вывести — через 3 дня':`На основной баланс переведено ${fmtG(r.payout_ton)} GRAM`);
+  toast(action==='add'?'Шляпа добавлена в стейкинг на 3 дня':action==='deposit/balance'?'Стоимость шляпы зачислена на баланс':action==='remove'?'Шляпа возвращена в инвентарь. Продать можно сразу, вывести — через 3 дня':`На основной баланс переведено ${fmtG(r.payout_ton)} ★`);
  }catch(e){toast(e.message||'Не удалось выполнить действие',true)}
  finally{stakingBusy=false;$('stakingDepositCash').disabled=false;$('stakingDepositStake').disabled=!sectionAvailable('staking')||!state?.staking?.price_available;renderStaking()}
 }
@@ -13823,7 +13837,7 @@ function stakingItem(prize,active){
  const card=document.createElement('article');card.className='stake-item';const image=document.createElement('img');image.src=prize.image||hatAsset(prize.tier);image.alt=prize.name;image.loading='lazy';
  const name=document.createElement('b');name.textContent=prize.name;
  if(active){card.dataset.staked=prize.id;card.setAttribute('role','button');card.tabIndex=0;card.onclick=()=>openStakingPosition(prize.id);card.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openStakingPosition(prize.id)}};card.append(image,name);return card}
- const details=document.createElement('p');details.textContent=active?`${fmtG(prize.daily_ton)} GRAM / сутки · начислено ${fmtG(prize.earned_ton)} GRAM`:'Любая модель — одинаковая ставка';
+ const details=document.createElement('p');details.textContent=active?`${fmtG(prize.daily_ton)} ★ / сутки · начислено ${fmtG(prize.earned_ton)} ★`:'Любая модель — одинаковая ставка';
  const button=document.createElement('button');button.className='wd-btn';button.dataset.stakingAction=active?'remove':'add';
  const until=active?prize.unlock_at:prize.staking_lock_until;
  if(until>stakingNow()){button.dataset.stakingUntil=until;button.textContent=stakingRemaining(until)}else button.textContent=active?'Вернуть в инвентарь':'Добавить в стейкинг';
@@ -13836,7 +13850,7 @@ function renderStaking(){
  const data=state?.staking;if(!data||stakingBusy)return;
  if(stakingClockData!==data){stakingClockData=data;stakingClockSkew=data.now*1000-Date.now()}
  $('stakingRulesText').replaceChildren(...[tr('Работает только на первые {count} подарков коллекции Witch Hat, при депозите Witch Hat на @{account} выбрать «Стейкинг», после чего подарок будет добавлен в соответствующий раздел и за него будет начисляться APR ({apr}%)',{count:data.rate_threshold??200,account:(giftCfg&&giftCfg.account)||'relayer',apr:+((data.base_percent_per_day??1)*365).toFixed(2)}),tr('Доступно мест: {free} из {total}',{free:data.slots_free??0,total:data.slots_total??200}),tr('Места 1–{high}: {p1}% в сутки, места {from}–{total}: {p2}% в сутки. Шляпы после {total}-й места принимаются, но доход по ним 0%',{high:100,p1:+(data.base_percent_per_day??1),from:101,total:data.slots_total??200,p2:+(data.above_percent_per_day??0.5)}),'',tr('Важно:'),tr('1. Стоимость подарка фиксируется по рыночной оценке на момент вклада'),tr('2. После вклада вывод подарка замораживается на 3 дня'),tr('3. Если забрать подарок из Стейкинга он будет заморожен для вывода на 3 дня')].map(t=>{const d=document.createElement('div');d.textContent=t;return d}));
- $('stakingBalance').textContent=fmtG(data.balance_ton)+' GRAM';$('stakingDaily').textContent=fmtG(data.daily_ton)+' '+tr('GRAM / сутки');
+ $('stakingBalance').textContent=fmtG(data.balance_ton)+' ★';$('stakingDaily').textContent=fmtG(data.daily_ton)+' '+tr('GRAM / сутки');
  $('stakingHatCount').textContent=tr('Шляп в стейкинге: {count}',{count:data.positions.length});
  $('stakingSlots').textContent=tr('Доступно мест: {free}',{free:data.slots_free??0});
  $('stakingBase').replaceChildren(...(data.price_available?[tr('Текущий флор {floor}',{floor:+Number(data.base_ton).toFixed(2)}),...((data.slots_free??1)>0?[tr('Доход: {daily} / сутки',{daily:fmtG(data.new_daily_ton)})]:[])]:[tr('Цена обычной шляпы на Portals пока недоступна. Уже внесённые шляпы приносят доход по своей фиксированной ставке.')]).map(t=>{const d=document.createElement('div');d.textContent=t;return d}));
@@ -13860,8 +13874,8 @@ function renderStakingPosition(){
  const earned=active?prize.earned_ton+Math.max(0,stakingNow()-data.now)*prize.daily_ton/86400:prize.staking_earned_ton||0;
  $('stakingPositionEarned').hidden=!active&&prize.staking_earned_ton==null;
  $('stakingPositionDaily').hidden=!active;$('stakingPositionReturn').hidden=!active;
- $('stakingPositionEarned').textContent=tr('Заработано с этой шляпы: {amount} GRAM',{amount:fmt(Math.floor(earned*1e6)/1e6,6)});
- if(active)$('stakingPositionDaily').textContent=prize.daily_ton>0?tr('Доход в сутки: {amount} GRAM · {percent}%',{amount:fmtG(prize.daily_ton),percent:prize.percent_per_day??data.percent_per_day}):'';
+ $('stakingPositionEarned').textContent=tr('Заработано с этой шляпы: {amount} ★',{amount:fmt(Math.floor(earned*1e6)/1e6,6)});
+ if(active)$('stakingPositionDaily').textContent=prize.daily_ton>0?tr('Доход в сутки: {amount} ★ · {percent}%',{amount:fmtG(prize.daily_ton),percent:prize.percent_per_day??data.percent_per_day}):'';
  if(!active){$('stakingPositionTime').textContent=prize.staking_lock_until>stakingNow()?tr('До возврата: {time}',{time:stakingRemaining(prize.staking_lock_until)}):tr('Подарок находится в инвентаре. В стейкинг принимаются только новые поступления шляп.');return}
  const remaining=prize.unlock_at-stakingNow(),button=$('stakingPositionReturn');button.disabled=stakingBusy||remaining>0;
  button.textContent=remaining>0?stakingRemaining(prize.unlock_at):tr('Вернуть в инвентарь');
@@ -13870,9 +13884,9 @@ function renderStakingPosition(){
 function openStakingDeposit(prize){
  if(stakingBusy)return;stakingDepositCurrent=prize;$('stakingAddModal').hidden=true;
  $('stakingDepositImage').src=prize.image||hatAsset(prize.tier);$('stakingDepositImage').alt=prize.name;$('stakingDepositName').textContent=prize.name;
- $('stakingDepositAmount').textContent=tr('На баланс (+10%): {amount} GRAM',{amount:fmtG(prize.credit_ton)});
- $('stakingDepositHoldValue').textContent=tr('Стоимость шляпы в холде: {amount} GRAM',{amount:fmtG(prize.value_ton)});
- $('stakingDepositDaily').textContent=(state.staking.slots_free??1)>0?tr('Доход стейкинга: {amount} GRAM в сутки от флора обычной шляпы',{amount:fmtG(state.staking.new_daily_ton)}):tr('Доступно мест: {free} из {total}',{free:state.staking.slots_free??0,total:state.staking.slots_total??200});
+ $('stakingDepositAmount').textContent=tr('На баланс (+10%): {amount} ★',{amount:fmtG(prize.credit_ton)});
+ $('stakingDepositHoldValue').textContent=tr('Стоимость шляпы в холде: {amount} ★',{amount:fmtG(prize.value_ton)});
+ $('stakingDepositDaily').textContent=(state.staking.slots_free??1)>0?tr('Доход стейкинга: {amount} ★ в сутки от флора обычной шляпы',{amount:fmtG(state.staking.new_daily_ton)}):tr('Доступно мест: {free} из {total}',{free:state.staking.slots_free??0,total:state.staking.slots_total??200});
  $('stakingDepositStake').disabled=!sectionAvailable('staking')||!state.staking.price_available;
  $('stakingDepositCash').disabled=false;$('stakingDepositModal').hidden=false;
 }
@@ -13893,7 +13907,7 @@ function stakingTick(){
  }
  const d=state?.staking;if(currentView!=='staking'||!d)return;
  const live=d.balance_ton+Math.max(0,stakingNow()-d.now)*d.daily_ton/86400;
- $('stakingBalance').textContent=fmt(Math.floor(live*1e6)/1e6,6)+' GRAM';
+ $('stakingBalance').textContent=fmt(Math.floor(live*1e6)/1e6,6)+' ★';
  if(!stakingBusy)$('stakingTransfer').disabled=live<.000001;
 }
 document.addEventListener('DOMContentLoaded',()=>{
