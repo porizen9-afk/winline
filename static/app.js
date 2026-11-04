@@ -1,1563 +1,3103 @@
-/* WinLine app.js — все скрипты фронта в одном файле (порядок как был в index.html) */
+"""
+Winline Mini App + Admin Bot
+Railway: uvicorn server:app --host 0.0.0.0 --port $PORT
+"""
+import asyncio
+import logging
+import math
+import os
+import random
+import time
+from typing import Optional
 
-/* ===== telegram-gifts.js ===== */
-(()=>{
-'use strict';
-const records=new Map(),dataCache=new Map();let runtime=null,frame=0;
-function slugFor(image){
- if(image.closest('#prizeGrid,#stakingPositions,#stakingEligible'))return null;
- const value=image.dataset.nftSlug||image.getAttribute('src')||'';
- const match=value.match(/(?:nft-img\/|t\.me\/nft\/|^)([a-z][a-z0-9]{1,63}-[1-9][0-9]{0,10})(?:\.png|$)/i);return match?match[1].toLowerCase():null;
-}
-function loadRuntime(){
- if(window.lottie)return Promise.resolve(window.lottie);
- if(!runtime)runtime=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='/static/vendor/lottie_light.min.js?v=5.13.0';script.onload=()=>window.lottie?resolve(window.lottie):reject(new Error('lottie'));script.onerror=()=>{runtime=null;script.remove();reject(new Error('lottie'))};document.head.append(script)});
- return runtime;
-}
-function loadData(slug){
- if(!dataCache.has(slug)){
-  const promise=fetch('/nft-animation/'+slug+'.json').then(response=>{if(!response.ok)throw new Error('animation');return response.json()});
-  dataCache.set(slug,promise);if(dataCache.size>48)dataCache.delete(dataCache.keys().next().value);
- }
- return dataCache.get(slug);
-}
-function position(record){
- const image=record.image,layer=record.layer;if(!layer)return;
- const style=getComputedStyle(image);Object.assign(layer.style,{left:image.offsetLeft+'px',top:image.offsetTop+'px',width:image.offsetWidth+'px',height:image.offsetHeight+'px',borderRadius:style.borderRadius,transform:style.transform,transformOrigin:style.transformOrigin});
-}
-function destroy(record){record.animation?.destroy();record.layer?.remove();record.image.classList.remove('telegram-gift-playing');resize.unobserve(record.image);intersection.unobserve(record.image);records.delete(record.image)}
-function schedule(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;synchronize()})}
-async function start(record){
- record.loading=true;
- try{
-  const [lottie,data]=await Promise.all([loadRuntime(),loadData(record.slug)]);
-  if(!record.image.isConnected||records.get(record.image)!==record)return;
-  const parent=record.image.parentElement;if(getComputedStyle(parent).position==='static')parent.style.position='relative';
-  const layer=document.createElement('span');layer.className='telegram-gift-animation';layer.setAttribute('aria-hidden','true');parent.append(layer);record.layer=layer;position(record);
-  const animation=lottie.loadAnimation({container:layer,renderer:'svg',loop:true,autoplay:false,animationData:structuredClone(data),rendererSettings:{preserveAspectRatio:'xMidYMid meet',progressiveLoad:true}});record.animation=animation;
-  animation.addEventListener('DOMLoaded',()=>{if(record.image.isConnected){record.ready=true;record.image.classList.add('telegram-gift-playing');schedule()}});
-  animation.addEventListener('data_failed',()=>{record.failed=true;destroy(record)});
- }catch(_){record.failed=true;record.layer?.remove();record.layer=null}
- finally{record.loading=false;schedule()}
-}
-function synchronize(){
- let playing=0,loading=[...records.values()].filter(record=>record.loading).length;
- for(const record of [...records.values()]){
-  if(!record.image.isConnected||slugFor(record.image)!==record.slug){destroy(record);continue}
-  const visible=record.visible&&!document.hidden&&record.image.getClientRects().length>0;
-  if(visible&&playing<6){playing++;if(!record.animation&&!record.loading&&!record.failed&&loading<2){loading++;start(record)}if(record.ready)record.animation.play()}
-  else record.animation?.pause();
- }
-}
-const resize=new ResizeObserver(entries=>{for(const entry of entries){const record=records.get(entry.target);if(record)position(record)}});
-const intersection=new IntersectionObserver(entries=>{for(const entry of entries){const record=records.get(entry.target);if(record)record.visible=entry.isIntersecting}schedule()},{rootMargin:'40px'});
-function scan(root){
- const images=[...(root.matches?.('img')?[root]:[]),...root.querySelectorAll?.('img')||[]];
- for(const image of images){const slug=slugFor(image),old=records.get(image);if(old&&old.slug===slug)continue;if(old)destroy(old);if(!slug)continue;
-  const record={image,slug,visible:false,loading:false,ready:false,failed:false};records.set(image,record);intersection.observe(image);resize.observe(image);image.addEventListener('load',()=>position(record),{once:true});
- }
- schedule();
-}
-function boot(){scan(document.body);new MutationObserver(changes=>{for(const change of changes){if(change.type==='attributes'&&change.target.tagName==='IMG')scan(change.target);for(const node of change.addedNodes)if(node.nodeType===1&&!node.closest?.('.telegram-gift-animation'))scan(node)}schedule()}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['src','data-nft-slug']});document.addEventListener('visibilitychange',schedule)}
-window.TelegramGiftMedia={scan};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-})();
-;
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Message,
+    WebAppInfo,
+)
+from fastapi import FastAPI, Header, HTTPException, Request, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-/* ===== scene-details.js ===== */
-try{
-(() => {
- 'use strict';
- const world=document.getElementById('meadowWorld'),root=document.documentElement;
- if(!world)return;
- const NS='http://www.w3.org/2000/svg';
- const wheel=document.querySelector('.wheel-wrap');
- let anchorX=.5,anchor=.4,frame=0,lastWheelSize=Math.min(innerWidth*.88,innerHeight*.4,350);
-
- const landmarks={meadow:{x:.5,y:.531,width:.109},halloween:{x:.5,y:.568,width:.12},basement:{x:.5,y:.501,width:.115}};
- function fit(){
-  frame=0;
-  const w=innerWidth,h=innerHeight,dpr=devicePixelRatio||1,box=wheel?.getBoundingClientRect();
-  if(box?.width&&box.height){let centre=wheel.offsetWidth*.5;for(let node=wheel;node;node=node.offsetParent)centre+=node.offsetLeft;anchorX=centre/w;anchor=(box.top+box.height*.67)/h;lastWheelSize=box.width;}
-  const target=Math.max(0,Math.min(h,h*anchor)),wheelSize=lastWheelSize;
-  for(const kind of ['meadow','halloween','basement']){
-   const img=kind==='meadow'?world.querySelector('.day'):kind==='basement'?document.querySelector('#basementWorld .basement-lit'):document.getElementById('halloweenNightPng');
-   const ratio=kind==='halloween'&&root.dataset.scenePortrait==='on'?941/1672:1672/941;
-   const l=landmarks[kind];
-   // halloween: plain cover, centred, pinned to the bottom (the grave sits behind the buttons)
-   const cover=kind==='halloween';
-   const height=Math.ceil((cover?Math.max(h,w/ratio):Math.max(h,w/ratio,target/l.y,(h-target)/(1-l.y),wheelSize*(kind==='basement'?.48:.65)/(l.width*ratio)))*dpr)/dpr;
-   const width=Math.ceil(height*ratio*dpr)/dpr;
-   const x=cover?Math.round((w-width)/2*dpr)/dpr:Math.max(w-width,Math.min(0,Math.round((w*anchorX-width*l.x)*dpr)/dpr));
-   const y=cover?h-height:Math.max(h-height,Math.min(0,Math.round((target-height*l.y)*dpr)/dpr));
-   const targetNode=root;
-   const vars=kind==='basement'?{'--bs-scene-w':width,'--bs-scene-h':height,'--bs-scene-x':x,'--bs-scene-y':y}:kind==='meadow'?{'--ms-w':width,'--ms-h':height,'--ms-rest-x':x,'--ms-top':y}:{'--hw-scene-w':width,'--hw-scene-h':height,'--hw-scene-x':x,'--hw-scene-y':y};
-   for(const [k,v]of Object.entries(vars))targetNode.style.setProperty(k,v+'px');
-  }
- }
- const schedule=()=>{if(!frame)frame=requestAnimationFrame(fit)};
- fit();new ResizeObserver(schedule).observe(wheel);
- addEventListener('resize',schedule,{passive:true});window.window.visualViewport?.addEventListener('resize',schedule);
- for(const img of [...world.querySelectorAll('.ms-img'),document.getElementById('halloweenNightPng')])img?.addEventListener('load',schedule);
- new MutationObserver(schedule).observe(root,{attributes:true,attributeFilter:['data-theme','data-halloween','data-basement','data-scene-portrait']});
- new ResizeObserver(schedule).observe(document.getElementById('view-upgrade'));
- new MutationObserver(schedule).observe(document.getElementById('view-upgrade'),{attributes:true,attributeFilter:['hidden','style','class']});
- document.fonts?.ready.then(schedule);
- if(window.PerformanceObserver){try{new PerformanceObserver(schedule).observe({type:'layout-shift',buffered:true})}catch(_){}}
-})();
-}catch(e){console.error("[app.js] scene-details.js",e)}
-;
-
-/* ===== optimization.js ===== */
-try{
-(() => {
- 'use strict';
- const root=document.documentElement,key='hatdrop.performance.v1';
- let enabled=false,decided=false,previousFocus=null;
- try{const p=JSON.parse(localStorage.getItem(key)||'{}');enabled=p.enabled===true;decided=p.decided===true}catch(_){}
- const copy={
-  ru:{title:'Режим оптимизации',intro:'Настройте плавность игры',recommend:'На этом устройстве рекомендуем включить оптимизацию для более плавной игры.',normal:'Выберите, сколько анимаций оставить. Этот режим можно изменить в настройках профиля.',note:'Упрощает фоновые эффекты и декоративные анимации.',apply:'Применить'},
-  en:{title:'Optimization mode',intro:'Choose your animation settings',recommend:'We recommend optimization on this device for smoother play.',normal:'Choose how many animations to keep. You can change this in profile settings.',note:'Simplifies background effects and decorative animations.',apply:'Apply'},
-  zh:{title:'优化模式',intro:'设置游戏流畅度',recommend:'建议在此设备上启用优化，让游戏更流畅。',normal:'选择保留多少动画。您可以在个人设置中更改。',note:'简化背景效果和装饰动画。',apply:'应用'}
- };
- const words=()=>copy[root.dataset.lang]||copy.ru;
- const dialog=document.getElementById('optimizationModal'),intro=document.getElementById('optimizationIntroToggle'),setting=document.getElementById('optimizationSetting');
- if(!dialog||!intro||!setting)return;
- function render(){
-  const t=words();
-  document.querySelectorAll('[data-optimization-text]').forEach(e=>{e.textContent=t[e.dataset.optimizationText]||''});
-  for(const input of [intro,setting])input.setAttribute('aria-label',t.title);
-  setting.checked=enabled;
- }
- function apply(value,persist=true){
-  enabled=value===true;
-  root.dataset.optimized=enabled?'on':'off';
-  if(persist){decided=true;try{localStorage.setItem(key,JSON.stringify({enabled,decided:true}))}catch(_){}}
-  render();
-  window.dispatchEvent(new CustomEvent('hatdrop:performancechange',{detail:{enabled}}));
- }
- function close(){
-  dialog.hidden=true;
-  const tour=document.getElementById('tourLayer');if(tour)tour.inert=false;
-  if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
- }
- document.getElementById('optimizationApply').addEventListener('click',()=>{apply(intro.checked);close()});
- setting.addEventListener('change',()=>apply(setting.checked));
- dialog.addEventListener('keydown',e=>{
-  if(e.key==='Escape'){e.preventDefault();apply(enabled);close()}
-  if(e.key==='Tab'){
-   const controls=[intro,document.getElementById('optimizationApply')];
-   if(e.shiftKey&&document.activeElement===controls[0]){e.preventDefault();controls[1].focus()}
-   else if(!e.shiftKey&&document.activeElement===controls[1]){e.preventDefault();controls[0].focus()}
-  }
- });
- new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-lang']});
- apply(enabled,false);
+import db
+from config import (
+    BANK,
+    BOT_TOKEN,
+    CATUP_API,
+    MIN_BET,
+    OWNER_ID,
+    OWNER2_ID,
+    WEBAPP_URL,
+    WITHDRAW_FEE,
+)
+try:
+    from config import BOT_USERNAME
+except ImportError:
+    BOT_USERNAME = "winlinebot"
+try:
+    from config import REQUIRED_CHANNEL, MOD_GIVE_MAX, MIN_WITHDRAW
+except ImportError:
+    REQUIRED_CHANNEL = ""
+    MOD_GIVE_MAX = 2500
+    MIN_WITHDRAW = 1000
 
 
- function sampleFrames(){
-  return new Promise(resolve=>{
-   let raf=0,last=0,done=false;const deltas=[];
-   const finish=()=>{if(done)return;done=true;cancelAnimationFrame(raf);clearTimeout(timeout);resolve(deltas.length>=18?deltas.sort((a,b)=>a-b)[Math.floor(deltas.length*.75)]:null)};
-   const tick=t=>{
-    if(document.hidden){finish();return}
-    if(last&&t-last<180)deltas.push(t-last);last=t;
-    if(deltas.length>=36)finish();else raf=requestAnimationFrame(tick);
-   };
-   const timeout=setTimeout(finish,1800);raf=requestAnimationFrame(tick);
-  });
- }
- async function firstVisit(){
-  if(decided)return;
-  await new Promise(resolve=>{const ready=()=>document.body&&document.body.classList.contains('booted');if(ready())return resolve();const mo=new MutationObserver(()=>{if(ready()){mo.disconnect();resolve()}});mo.observe(document.body,{attributes:true,attributeFilter:['class']});setTimeout(resolve,25000)});
-  await new Promise(resolve=>setTimeout(resolve,300));
-  const frameTime=await sampleFrames();
-  if(decided)return;
-  if(document.hidden){document.addEventListener('visibilitychange',()=>{if(!document.hidden)firstVisit()},{once:true});return}
-  const cores=Number(navigator.hardwareConcurrency)||0,memory=Number(navigator.deviceMemory)||0;
-  const recommended=(cores>0&&cores<=4)||(memory>0&&memory<=2)||navigator.connection?.saveData===true||matchMedia('(prefers-reduced-motion: reduce)').matches||(frameTime!==null&&frameTime>32);
-  const t=words();document.getElementById('optimizationRecommendation').textContent=recommended?t.recommend:t.normal;
-  intro.checked=recommended;
-  previousFocus=document.activeElement;
-  const tour=document.getElementById('tourLayer');if(tour)tour.inert=true;
-  dialog.hidden=false;intro.focus({preventScroll:true});
- }
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("winline")
 
- window.HatDropPerformance={setEnabled:apply,get enabled(){return enabled}};
- firstVisit();
-})();
-}catch(e){console.error("[app.js] optimization.js",e)}
-;
+# ---------- Telegram bot ----------
+session = AiohttpSession(api=TelegramAPIServer.from_base(CATUP_API))
+bot = Bot(token=BOT_TOKEN, session=session)
+dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
-/* ===== game-audio.js ===== */
-try{
-(() => {
-  'use strict';
-  const manifest = {"meadow": {"day": {"music": ["/static/audio/meadow-day-music.ogg?v=1", "/static/audio/meadow-day-music.mp3?v=1"], "ambience": ["/static/audio/meadow-day-ambience.ogg?v=1", "/static/audio/meadow-day-ambience.mp3?v=1"], "effects": {"navigation": "/static/audio/navigation.mp3?v=1", "spin": "/static/audio/upgrade-spin.mp3?v=1", "success": "/static/audio/upgrade-success.mp3?v=1", "miss": "/static/audio/upgrade-miss.mp3?v=1", "open": "/static/audio/meadow-chest-open.mp3?v=1", "reveal": "/static/audio/meadow-gold-reveal.mp3?v=1"}}, "night": {"music": ["/static/audio/meadow-night-music.ogg?v=1", "/static/audio/meadow-night-music.mp3?v=1"], "ambience": ["/static/audio/meadow-night-ambience.ogg?v=1", "/static/audio/meadow-night-ambience.mp3?v=1"], "effects": {"navigation": "/static/audio/navigation.mp3?v=1", "spin": "/static/audio/upgrade-spin.mp3?v=1", "success": "/static/audio/upgrade-success.mp3?v=1", "miss": "/static/audio/upgrade-miss.mp3?v=1", "open": "/static/audio/meadow-chest-open.mp3?v=1", "reveal": "/static/audio/meadow-gold-reveal.mp3?v=1"}}}, "halloween": {"day": {"effects": {"navigation": "/static/audio/halloween-navigation.mp3?v=1", "spin": "/static/audio/halloween-upgrade-spin.mp3?v=1", "success": "/static/audio/halloween-upgrade-success.mp3?v=1", "miss": "/static/audio/halloween-upgrade-miss.mp3?v=1", "open": "/static/audio/halloween-coffin-open.mp3?v=3", "reveal": "/static/audio/halloween-candy-reveal.mp3?v=1"}, "music": ["/static/audio/halloween-day-music.ogg?v=1", "/static/audio/halloween-day-music.mp3?v=1"], "ambience": ["/static/audio/halloween-day-ambience.ogg?v=3", "/static/audio/halloween-day-ambience.mp3?v=3"]}, "night": {"effects": {"navigation": "/static/audio/halloween-navigation.mp3?v=1", "spin": "/static/audio/halloween-upgrade-spin.mp3?v=1", "success": "/static/audio/halloween-upgrade-success.mp3?v=1", "miss": "/static/audio/halloween-upgrade-miss.mp3?v=1", "open": "/static/audio/halloween-coffin-open.mp3?v=2", "reveal": "/static/audio/halloween-candy-reveal.mp3?v=1"}, "music": ["/static/audio/halloween-night-music.ogg?v=1", "/static/audio/halloween-night-music.mp3?v=1"], "ambience": ["/static/audio/halloween-night-ambience.ogg?v=3", "/static/audio/halloween-night-ambience.mp3?v=3"]}}, "basement": {"day": {"music": ["/static/audio/basement-day-music.ogg?v=1", "/static/audio/basement-day-music.mp3?v=1"], "ambience": ["/static/audio/basement-day-ambience.ogg?v=4", "/static/audio/basement-day-ambience.mp3?v=4"], "effects": {"navigation": "/static/audio/basement-navigation.mp3?v=1", "success": "/static/audio/basement-success.mp3?v=1", "miss": "/static/audio/basement-miss.mp3?v=1", "spin": "/static/audio/basement-spin.mp3?v=1", "open": "/static/audio/basement-open.mp3?v=1", "reveal": "/static/audio/basement-reveal.mp3?v=1", "light": "/static/audio/basement-light.mp3?v=1", "shop-open": "/static/audio/basement-shop-open.mp3?v=1", "shop-tab": "/static/audio/basement-shop-tab.mp3?v=1", "purchase": "/static/audio/basement-purchase.mp3?v=1", "equip": "/static/audio/basement-equip.mp3?v=1", "gear-preview": "/static/audio/basement-gear-preview.mp3?v=1", "settings-open": "/static/audio/basement-settings-open.mp3?v=1", "reward": "/static/audio/basement-reward.mp3?v=1", "switch": "/static/audio/basement-switch.mp3?v=1", "light-on": "/static/audio/basement-light-on.mp3?v=1", "lamp-flicker": "/static/audio/basement-lamp-flicker.mp3?v=1"}}, "night": {"music": ["/static/audio/basement-night-music.ogg?v=1", "/static/audio/basement-night-music.mp3?v=1"], "ambience": ["/static/audio/basement-night-ambience.ogg?v=4", "/static/audio/basement-night-ambience.mp3?v=4"], "effects": {"navigation": "/static/audio/basement-navigation.mp3?v=1", "success": "/static/audio/basement-success.mp3?v=1", "miss": "/static/audio/basement-miss.mp3?v=1", "spin": "/static/audio/basement-spin.mp3?v=1", "open": "/static/audio/basement-open.mp3?v=1", "reveal": "/static/audio/basement-reveal.mp3?v=1", "light": "/static/audio/basement-light.mp3?v=1", "shop-open": "/static/audio/basement-shop-open.mp3?v=1", "shop-tab": "/static/audio/basement-shop-tab.mp3?v=1", "purchase": "/static/audio/basement-purchase.mp3?v=1", "equip": "/static/audio/basement-equip.mp3?v=1", "gear-preview": "/static/audio/basement-gear-preview.mp3?v=1", "settings-open": "/static/audio/basement-settings-open.mp3?v=1", "reward": "/static/audio/basement-reward.mp3?v=1", "switch": "/static/audio/basement-switch.mp3?v=1", "light-on": "/static/audio/basement-light-on.mp3?v=1", "lamp-flicker": "/static/audio/basement-lamp-flicker.mp3?v=1"}}}};
-  const channels = ['music','ambience','effects'];
-  const key = 'hatdrop.audio.v1';
-  let prefs = {music:true, ambience:true, effects:true};
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) || '{}');
-    channels.forEach(channel => {if (typeof saved[channel] === 'boolean') prefs[channel] = saved[channel];});
-  } catch (_) {}
-  let context, master, unlocked = false, generation = 0, lastKey = '';
-  const decodedSizes=new Map();const MAX_AUDIO_BYTES=64*1024*1024;
-  const buffers = new Map(), loops = new Map(), effects = new Set();
-  const root = document.documentElement;
-  const hallDays=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-  const scene=()=>({theme:root.dataset.hall==='on'?'hall':root.dataset.basement==='on'?'basement':root.dataset.halloween==='on'?'halloween':'meadow',sky:root.dataset.sky==='night'?'night':'day',curtains:root.dataset.hallCurtains==='closed'?'closed':'open',weekday:hallDays[new Date().getDay()]});
-  const hallTracksCache=new Map();
-  function tracksFor(c){if(c.theme!=='hall')return manifest[c.theme]?.[c.sky]||{};const key=c.weekday+'-'+c.sky+'-'+c.curtains;if(!hallTracksCache.has(key)){const state=c.sky+'-'+c.curtains,base='/static/hall/audio/';const effectNames={navigation:'navigation',spin:'spin-loop',success:'success',miss:'miss',open:'menu-open',reveal:'gift-reveal','shop-open':'shop-open','shop-tab':'navigation',purchase:'purchase',equip:'equip','gear-preview':'emerald-shimmer','settings-open':'menu-open',reward:'gift-reveal',switch:'navigation',light:'day-to-night','light-on':'night-to-day','lamp-flicker':'lamp-flicker','curtains-open':'curtains-open','curtains-close':'curtains-close','spin-start':'spin-start','spin-stop':'spin-stop'};hallTracksCache.set(key,{music:['ogg','mp3'].map(x=>base+'music/hall-'+c.weekday+'-'+state+'.'+x),ambience:['ogg','mp3'].map(x=>base+'ambience/hall-ambience-'+state+'.'+x+'?v=calm2'),effects:Object.fromEntries(Object.entries(effectNames).map(([k,v])=>[k,base+'effects/hall-'+v+'.mp3?v=calm2']))})}return hallTracksCache.get(key)}
-  const active = () => !document.hidden && window.Telegram?.WebApp?.isActive !== false;
-  const available = channel => Object.values(manifest).some(theme => Object.values(theme).some(sky => !!sky[channel]));
-  function stopLoop(channel, seconds = .6) {
-    const playing = loops.get(channel);
-    if (!playing || !context) return;
-    loops.delete(channel);
-    const now=context.currentTime;
-    playing.gain.gain.cancelScheduledValues(now);
-    playing.gain.gain.setValueAtTime(playing.gain.gain.value,now);
-    playing.gain.gain.linearRampToValueAtTime(0,now+seconds);
-    try {playing.source.stop(now+seconds+.02);} catch (_) {}
-  }
-  function stopEffects() {
-    for (const source of effects) {try {source.stop();} catch (_) {}}
-    effects.clear();
-  }
-  function trimBuffers(){
-    let total=[...decodedSizes.values()].reduce((a,b)=>a+b,0);
-    for(const [url,size] of decodedSizes){
-      if(total<=MAX_AUDIO_BYTES)break;
-      if([...loops.values()].some(loop=>Array.isArray(loop.url)?loop.url.includes(url):loop.url===url))continue;
-      buffers.delete(url);decodedSizes.delete(url);total-=size;
+app = FastAPI(title="Winline")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+STATIC = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC):
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+def uid_from(x) -> int:
+    return int(x)
+
+
+# ---------- helpers ----------
+def public_user(uid: int) -> dict:
+    try:
+        u = db.ensure_user(uid) or {}
+    except Exception as e:
+        log.exception("ensure_user")
+        u = {"balance": 0, "wager": 0, "deposited": 0, "username": str(uid)}
+    try:
+        admin = db.is_admin(uid)
+    except Exception:
+        admin = False
+    try:
+        owner = db.is_owner(uid)
+    except Exception:
+        owner = False
+    try:
+        mod = bool(getattr(db, "is_moderator", lambda _x: False)(uid))
+    except Exception:
+        mod = False
+    return {
+        "id": int(uid),
+        "username": u.get("username") or "",
+        "first_name": u.get("first_name") or "",
+        "photo_url": u.get("photo_url") or "",
+        "balance": int(u.get("balance") or 0),
+        "wager": int(u.get("wager") or 0),
+        "deposited": int(u.get("deposited") or 0),
+        "is_admin": bool(admin),
+        "is_owner": bool(owner),
+        "is_moderator": bool(mod),
     }
-  }
-  async function buffer(url) {
-    if (Array.isArray(url)) {
-      for (const candidate of url) {
-        try {return await buffer(candidate);} catch (_) {}
-      }
-      throw new Error('Audio unavailable');
-    }
-    if (!buffers.has(url)) buffers.set(url, fetch(url).then(response => {
-      if (!response.ok) throw new Error('Audio unavailable');
-      return response.arrayBuffer();
-    }).then(bytes => context.decodeAudioData(bytes)).then(data=>{decodedSizes.set(url,data.length*data.numberOfChannels*4);trimBuffers();return data}).catch(error => {buffers.delete(url);decodedSizes.delete(url);throw error;}));
-    const pending=buffers.get(url);if(pending){buffers.delete(url);buffers.set(url,pending);if(decodedSizes.has(url)){const size=decodedSizes.get(url);decodedSizes.delete(url);decodedSizes.set(url,size)}}return pending;
-  }
-  function renderControls() {
-    document.querySelectorAll('[data-audio-channel]').forEach(input => {
-      const channel=input.dataset.audioChannel;
-      input.checked=prefs[channel] === true;
-      input.closest('[data-audio-row]').hidden=!available(channel);
-    });
-    const note=document.getElementById('audioSceneNote');
-    if (note) note.textContent='Музыка и окружение включаются независимо.';
-    const off=document.getElementById('audioAllOff');
-    if (off) off.disabled=!channels.some(channel => prefs[channel]);
-  }
-  async function reconcile(force = false) {
-    const current=scene(), enabled=active();
-    const signature=JSON.stringify([current,prefs,enabled,unlocked]);
-    if (!force && signature===lastKey) return;
-    lastKey=signature;
-    const run=++generation;
-    renderControls();
-    const tracks=tracksFor(current);
-    await Promise.all(['music','ambience'].map(async channel => {
-      const url=tracks[channel];
-      if (!enabled || !unlocked || !prefs[channel] || !url) {stopLoop(channel,enabled ? .08 : .02);return;}
-      if (loops.get(channel)?.url===url) return;
-      stopLoop(channel);
-      try {
-        const data=await buffer(url);
-        if (generation!==run || !active() || !prefs[channel] || context.state!=='running') return;
-        const source=context.createBufferSource(), gain=context.createGain();
-        source.buffer=data;source.loop=true;source.connect(gain);gain.connect(master);
-        gain.gain.setValueAtTime(0,context.currentTime);
-        gain.gain.linearRampToValueAtTime(channel==='music' ? .85 : .7,context.currentTime+(current.theme==='hall'?1.6:.65));
-        loops.set(channel,{source,gain,url});
-        source.onended=()=>{source.disconnect();gain.disconnect();};
-        source.start();
-      } catch (_) {                                                      }
-    }));
-    trimBuffers();
-    if (!enabled || !prefs.effects) stopEffects();
-  }
-  async function unlock() {
-    if (!channels.some(channel => prefs[channel]) || !active()) return;
-    try {
-      if (!context) {
-        const Audio = window.AudioContext || window.webkitAudioContext;
-        if (!Audio) return;
-        context=new Audio(); master=context.createGain();master.gain.value=.46;master.connect(context.destination);
-      }
-      await context.resume();
-      unlocked=context.state==='running';
-      await reconcile(true);
-    } catch (_) {}
-  }
-  function save() {
-    try {localStorage.setItem(key,JSON.stringify(prefs));} catch (_) {}
-    reconcile();
-  }
-  function allOff() {
-    channels.forEach(channel => prefs[channel]=false);
-    stopEffects();save();
-  }
-  async function effect(name, duration) {
-    if (!prefs.effects || !active() || !unlocked || !context) return;
-    const current=scene();let url=tracksFor(current).effects?.[name];
-    if(current.theme==='hall'&&name==='spin'&&duration>0&&duration<2)url='/static/hall/audio/effects/hall-spin-fast.mp3?v=calm2';
-    if (!url) return;
-    const run=generation;
-    try {
-      const data=await buffer(url);
-      if (generation!==run || !prefs.effects || !active()) return;
-      const source=context.createBufferSource(),gain=context.createGain();
-      source.buffer=data;gain.gain.value=.6;source.connect(gain);gain.connect(master);
-      if (duration>0) source.playbackRate.value=data.duration/duration;
-      if(effects.size>=6){const oldest=effects.values().next().value;try{oldest.stop()}catch(_){}effects.delete(oldest)}
-      effects.add(source);source.onended=()=>{effects.delete(source);source.disconnect();gain.disconnect();};source.start();
-    } catch (_) {}
-  }
-  document.addEventListener('change',event=>{
-    const channel=event.target?.dataset?.audioChannel;
-    if (!channels.includes(channel)) return;
-    prefs[channel]=event.target.checked === true;save();unlock();
-  });
-  document.getElementById('audioAllOff')?.addEventListener('click',allOff);
-  document.addEventListener('pointerdown',()=>{if (!unlocked) unlock();},{passive:true});
-  document.addEventListener('visibilitychange',()=>reconcile());
-  new MutationObserver(()=>reconcile()).observe(root,{attributes:true,attributeFilter:['data-sky','data-halloween','data-basement','data-hall','data-hall-curtains']});
-  setInterval(()=>reconcile(),1000);
-  renderControls();
-  window.GameAudio={allOff,effect,getState:()=>({preferences:{...prefs},scene:scene(),unlocked,
-    playing:[...loops.keys()],sources:Object.fromEntries([...loops].map(([channel,playing])=>[channel,playing.url])),loaded:[...buffers.keys()],cacheBytes:[...decodedSizes.values()].reduce((a,b)=>a+b,0),effectVoices:effects.size})};
-  unlock();
-})();
-}catch(e){console.error("[app.js] game-audio.js",e)}
-;
-
-/* ===== basement.js ===== */
-try{
-(() => {
- 'use strict';
- const root=document.documentElement,host=document.querySelector('.bg-wide');if(!host)return;
- const scene=document.createElement('div');scene.id='basementScene';scene.setAttribute('aria-hidden','true');
- scene.innerHTML='<div id="basementWorld"><img class="basement-dim" alt="" decoding="async"><img class="basement-lit" alt="" decoding="async"></div>';
- host.appendChild(scene);
- const world=scene.firstElementChild,NS='http://www.w3.org/2000/svg';
- const button=document.getElementById('skyBtn');
- const icon=document.createElementNS(NS,'svg');icon.setAttribute('viewBox','0 0 16 16');icon.setAttribute('aria-hidden','true');icon.setAttribute('shape-rendering','crispEdges');icon.classList.add('sky-bulb');
- icon.innerHTML='<path d="M5 1h6v1h2v2h1v5h-2v3H4V9H2V4h1V2h2zM5 13h6v2H5zM6 15h4v1H6z"/><path d="M6 4h2v2H6zM5 5h1v3H5z" fill="#fff8da"/>';button?.appendChild(icon);
- const nav=document.querySelector('.tabbar');
- if(nav)for(const side of ['left','right']){const detail=document.createElement('span');detail.className='bs-nav-detail bs-nav-'+side;detail.setAttribute('aria-hidden','true');nav.appendChild(detail)}
- const reduced=matchMedia('(prefers-reduced-motion: reduce)');
- let loaded=false,previousSky=root.dataset.sky,previousActive=root.dataset.basement==='on',flickerTimer=0,sequenceTimer=0;
- const canAnimate=()=>root.dataset.optimized!=='on'&&!reduced.matches&&!document.hidden&&window.Telegram?.WebApp?.isActive!==false;
- function clearSequence(){clearTimeout(sequenceTimer);world.classList.remove('bs-igniting','bs-flickering')}
- function sequence(element,ignition){
-  element.classList.remove('bs-igniting','bs-flickering');if(!canAnimate())return;
-  void element.offsetWidth;element.classList.add(ignition?'bs-igniting':'bs-flickering');
-  if(element===world){clearTimeout(sequenceTimer);sequenceTimer=setTimeout(clearSequence,1300)}
-  else element.addEventListener('animationend',()=>element.classList.remove('bs-igniting','bs-flickering'),{once:true});
- }
- function scheduleFlicker(){
-  clearTimeout(flickerTimer);flickerTimer=0;
-  if(root.dataset.basement!=='on'||root.dataset.sky==='night'||!canAnimate())return;
-  flickerTimer=setTimeout(()=>{flickerTimer=0;if(root.dataset.basement==='on'&&root.dataset.sky!=='night'&&canAnimate()){sequence(world,false);window.GameAudio?.effect('lamp-flicker');scheduleFlicker()}},22000+Math.random()*26000);
- }
- window.BasementLight={preview(stage,on){stage.classList.remove('bs-igniting','bs-flickering');if(on)sequence(stage,true)}};
- function sync(){
-  const active=root.dataset.basement==='on';
-  if(active&&!loaded){loaded=true;for(const [selector,name]of [['.basement-lit','day'],['.basement-dim','night']]){const image=world.querySelector(selector);if(!image)continue;image.addEventListener('load',()=>dispatchEvent(new Event('resize')));}}
-  if(active&&button){const dim=root.dataset.sky==='night';const label=({en:dim?'Turn light on':'Turn light off',zh:dim?'开灯':'关灯',ru:dim?'Включить свет':'Выключить свет'})[root.dataset.lang]|| (dim?'Включить свет':'Выключить свет');button.title=label;button.setAttribute('aria-label',label);button.setAttribute('aria-pressed',String(!dim));}
-  scene.classList.toggle('basement-paused',document.hidden||window.Telegram?.WebApp?.isActive===false);
-  nav?.classList.toggle('basement-paused',scene.classList.contains('basement-paused'));
-  const sky=root.dataset.sky,changed=sky!==previousSky||active!==previousActive;
-  if(!active||sky==='night'||!canAnimate())clearSequence();
-  else if(changed&&previousActive&&previousSky==='night')sequence(world,true);
-  if(changed||!canAnimate()||!flickerTimer)scheduleFlicker();
-  previousSky=sky;previousActive=active;
- }
- new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-basement','data-sky','data-lang','data-optimized']});reduced.addEventListener('change',sync);
-
- document.addEventListener('click',event=>{
-  if(root.dataset.basement!=='on')return;const target=event.target.closest('button');if(!target||target.disabled)return;
-  let sound=target.matches('.kq-tab')?'shop-tab':target.matches('.shop-card')?'shop-open':target.matches('.weapon-card')?'gear-preview':target.matches('#wpApply')?'equip':target.matches('#settingsBtn')?'settings-open':target.matches('[data-cz]')?'switch':null;
-  if(sound)window.GameAudio?.effect(sound);
- });
- document.addEventListener('change',event=>{if(root.dataset.basement==='on'&&event.target.matches('.pixel-switch-input'))queueMicrotask(()=>window.GameAudio?.effect('switch'))});
- document.addEventListener('visibilitychange',sync);window.Telegram?.WebApp?.onEvent?.('activated',sync);window.Telegram?.WebApp?.onEvent?.('deactivated',sync);sync();
-})();
-}catch(e){console.error("[app.js] basement.js",e)}
-;
-
-/* ===== authored-scenes.js ===== */
-try{
-(()=>{'use strict';const root=document.documentElement,host=document.querySelector('.bg-wide');if(!host)return;
- const stage=document.createElement('div');stage.id='authoredBackdrop';stage.setAttribute('aria-hidden','true');host.append(stage);
- const motion=matchMedia('(prefers-reduced-motion: reduce)'),tall=matchMedia('(max-aspect-ratio: 1/1)'),cache=new Map();let revision=0,previous=null,settleTimer=0,inFlight=false;
- const kind=()=>root.dataset.hall==='on'?'hall':root.dataset.basement==='on'?'basement':root.dataset.halloween==='on'?'halloween':'meadow';
- const url=(name)=>'/static/scenes/'+name+'.svg?v=16';
- // backgrounds uploaded by the admin ("Настройки фона"): key theme:sky:phone|pc; no entry = built-in scene
- try{window.__bgConfig=window.__bgConfig||JSON.parse(localStorage.getItem('bgConfig')||'{}')}catch(_){window.__bgConfig={}}
- const customFor=(theme,sky)=>{const row=(window.__bgConfig||{})[theme+':'+sky+':'+(tall.matches?'phone':'pc')];return row&&row.url?row.url+(row.ts?'?v='+row.ts:''):''};
- const names={meadow:{day:'meadow-day',night:'meadow-night'},halloween:{day:'halloween-nightfall-gray-calm',night:'halloween-nightfall'},basement:{day:'basement-day',night:'basement-night'}};
- async function loaded(src){
-  let ready=cache.get(src);
-  if(!ready){
-   ready=(async()=>{const img=new Image();img.decoding='async';img.alt='';img.src=src;await new Promise((resolve,reject)=>{if(img.complete&&img.naturalWidth)return resolve();img.onload=resolve;img.onerror=reject});try{await img.decode()}catch(_){}return img})();
-   cache.set(src,ready);ready.catch(()=>{if(cache.get(src)===ready)cache.delete(src)});
-  }else{cache.delete(src);cache.set(src,ready)}
-  while(cache.size>4)cache.delete(cache.keys().next().value);
-  const template=await ready,image=template.cloneNode();try{await image.decode()}catch(_){}return image;
- }
-
- async function loadedAny(list){let last;for(const s of [].concat(list)){try{return await loaded(s)}catch(e){last=e}}throw last}
- async function show(src,theme,id,duration,custom){
-  const image=await loadedAny(src);if(id!==revision)return false;
-  image.className='authored-frame'+(custom?' authored-custom':'');image.dataset.scene=theme;image.style.opacity='0';stage.append(image);
-  const old=[...stage.children].filter(e=>e!==image);for(const node of old){const alpha=getComputedStyle(node).opacity;node.style.transition='none';node.style.opacity=alpha}
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));if(id!==revision){image.remove();return false}
-  for(const node of old){node.style.transition=`opacity ${duration}ms ease-in-out`;node.style.opacity='0'}image.style.transition=`opacity ${duration}ms ease-in-out`;image.style.opacity='1';
-  await new Promise(resolve=>setTimeout(resolve,duration+30));if(id!==revision)return false;for(const node of old)node.remove();return true;
- }
- async function sync(){
-  const theme=kind(),sky=root.dataset.sky==='night'?'night':'day',still=root.dataset.optimized==='on'||motion.matches||document.hidden;
-  const curtains=root.dataset.hallCurtains==='closed'?'closed':'open',custom=customFor(theme,sky),portrait=theme==='halloween'&&tall.matches&&!custom;root.dataset.scenePortrait=portrait?'on':'off';if(previous&&theme===previous.theme&&sky===previous.sky&&still===previous.still&&curtains===previous.curtains&&portrait===previous.portrait&&custom===previous.custom)return;
-  const old=previous,interrupted=inFlight;previous={theme,sky,still,curtains,portrait,custom};const id=++revision;clearTimeout(settleTimer);inFlight=true;
-  const nm=theme==='hall'?'':names[theme][sky],steady=custom||(theme==='hall'?'/static/hall/room/'+sky+'-'+curtains+'.png?v=1':(()=>{const o=[];for(const m of portrait?['-m','']:[''])for(const s of still?['-still','']:[''])o.push(url(nm+m+s));o.push(url(names.halloween[sky]));return o})());
-  try{
-   const switchingSky=old&&old.theme===theme&&old.sky!==sky;
-   if(!custom&&!(old&&old.custom)&&theme!=='hall'&&theme!=='halloween'&&switchingSky&&!still&&!interrupted){
-    const duration=theme==='meadow'?9000:theme==='halloween'?3000:1300;
-    const transition=theme==='meadow'?(sky==='night'?'meadow-day-to-night':'meadow-night-to-day'):theme+'-smooth-to-'+sky;
-    if(!await show(url(transition),theme,id,140))return;
 
 
-    settleTimer=setTimeout(()=>{if(id===revision)inFlight=false},duration);
-   }else{
+def change_balance(uid: int, delta: int, reason: str = "") -> int:
+    db.ensure_user(uid)
+    u = db.get_users()
+    if not isinstance(u, dict):
+        u = {}
+    k = str(uid)
+    if k not in u or not isinstance(u.get(k), dict):
+        db.ensure_user(uid)
+        u = db.get_users()
+    bal = int(u[k].get("balance") or 0) + int(delta)
+    if bal < 0:
+        raise ValueError("insufficient")
+    u[k]["balance"] = bal
+    if delta < 0:
+        u[k]["wager"] = int(u[k].get("wager") or 0) + abs(delta)
+    db.save_users(u)
+    if reason:
+        try:
+            db.add_history({"uid": uid, "type": "balance", "delta": delta, "reason": reason, "bal": bal})
+        except Exception:
+            pass
+    return bal
 
-    const enteringHalloween=theme==='halloween'&&old&&old.theme!==theme&&!still;
-    if(enteringHalloween)stage.classList.add('scene-glitch');
-    if(!await show(steady,theme,id,motion.matches?0:still?140:enteringHalloween?100:old?650:0,!!custom))return;
-    stage.classList.remove('scene-glitch');if(id===revision)inFlight=false;
-   }
-  }catch(_){if(id===revision){inFlight=false;previous=null}}
- }
- let scheduled=false;function schedule(){if(!scheduled){scheduled=true;queueMicrotask(()=>{scheduled=false;sync()})}}
- new MutationObserver(schedule).observe(root,{attributes:true,attributeFilter:['data-hall','data-hall-curtains','data-theme','data-sky','data-halloween','data-basement','data-optimized']});motion.addEventListener('change',schedule);tall.addEventListener('change',schedule);addEventListener('bgconfig',schedule);document.addEventListener('visibilitychange',schedule);
- window.SceneBackground={get state(){return previous},get transitioning(){return inFlight},refresh:schedule};schedule();
-})();
-}catch(e){console.error("[app.js] authored-scenes.js",e)}
-;
 
-/* ===== hall/hall-room-fx.js ===== */
-class HallRoomFX {
- constructor(canvas,{optimized=false}={}){this.canvas=canvas;this.g=canvas.getContext('2d');this.optimized=optimized;this.particles=[];this.last=0;this.emitted=0;this.raf=0;this.flickerUntil=0;this.destroyed=false;this.wicks=[[528,49],[571,25],[674,25],[731,56],[180,224],[296,248],[455,273],[470,269],[478,277],[422,490],[1187,274],[1195,269],[1209,279],[1395,246],[1414,239],[1617,178],[1639,165]];this.resize=()=>{const r=canvas.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2,Math.sqrt(2000000/Math.max(1,r.width*r.height)));canvas.width=Math.max(1,Math.round(r.width*d));canvas.height=Math.max(1,Math.round(r.height*d))};this.ro=new ResizeObserver(this.resize);this.ro.observe(canvas);this.visibility=()=>{if(document.hidden){cancelAnimationFrame(this.raf);this.raf=0}else this.resume()};document.addEventListener('visibilitychange',this.visibility);this.resume()}
- setOptimized(v){this.optimized=!!v;this.particles=[];if(v){cancelAnimationFrame(this.raf);this.raf=0;this.g.clearRect(0,0,this.canvas.width,this.canvas.height)}else this.resume()}
- flicker(){this.flickerUntil=performance.now()+650}
- resume(){if(this.raf||this.optimized||document.hidden||this.destroyed)return;const frame=now=>{this.raf=0;if(this.optimized||document.hidden||this.destroyed)return;if(now-this.last<1000/30){this.raf=requestAnimationFrame(frame);return}this.last=now;const g=this.g,w=this.canvas.width,h=this.canvas.height,scale=Math.max(w/1672,h/941),ox=(w-1672*scale)/2,oy=(h-941*scale)/2;g.clearRect(0,0,w,h);g.save();g.translate(ox,oy);g.scale(scale,scale);
- if(now-this.emitted>190&&this.particles.length<18){this.emitted=now;this.particles.push({x:1480+Math.random()*75,y:535+Math.random()*20,born:now,life:1000+Math.random()*800,dx:(Math.random()-.5)*30})}
- for(const p of this.particles){const t=(now-p.born)/p.life;if(t>1)continue;g.globalAlpha=(1-t)*.7;g.fillStyle=t<.4?'#ffd077':'#ec763c';g.fillRect(p.x+p.dx*t,p.y-t*100,2,3)}g.globalAlpha=1;this.particles=this.particles.filter(p=>now-p.born<p.life);
- this.wicks.forEach(([x,y],i)=>{const pulse=.15+.06*Math.sin(now/(130+i*5)+i)+.03*Math.sin(now/57+i);const a=now<this.flickerUntil?pulse*(.3+.7*Math.sin(now/31+i)**2):pulse;const grad=g.createRadialGradient(x,y-8,0,x,y-8,24);grad.addColorStop(0,`rgba(255,207,109,${a})`);grad.addColorStop(1,'rgba(255,176,70,0)');g.fillStyle=grad;g.fillRect(x-24,y-32,48,48)});g.restore();this.raf=requestAnimationFrame(frame)};this.raf=requestAnimationFrame(frame)}
- destroy(){this.destroyed=true;cancelAnimationFrame(this.raf);this.ro.disconnect();document.removeEventListener('visibilitychange',this.visibility)}
+# ---------- AUTH (simple: tg id header from webapp) ----------
+def require_uid(x_uid: Optional[str] = None, q_uid: Optional[str] = None) -> int:
+    raw = x_uid or q_uid
+    if not raw:
+        raise HTTPException(401, "no uid — открой из Telegram")
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        raise HTTPException(401, "bad uid")
+
+
+# множители: индекс = число открытых клеток (режимы 3/5/8)
+MINES_MULT = {
+    3: [1.0, 1.12, 1.28, 1.47, 1.7, 2.0, 2.35, 2.8, 3.4, 4.2, 5.2, 6.5, 8.2, 10.5, 13.5, 17.5, 23.0, 30.0, 40.0, 55.0, 75.0, 100.0],
+    5: [1.0, 1.2, 1.45, 1.8, 2.25, 2.9, 3.7, 4.8, 6.3, 8.4, 11.5, 15.5, 21.0, 29.0, 40.0, 56.0, 80.0, 115.0, 170.0, 250.0],
+    8: [1.0, 1.35, 1.85, 2.6, 3.7, 5.3, 7.8, 11.5, 17.5, 27.0, 42.0, 65.0, 105.0, 170.0, 280.0, 480.0, 850.0],
 }
-window.HallRoomFX=HallRoomFX;
-;
+# бомбы не раскладываются заранее: на каждом open сервер «подставляет» с завышенным шансом
+MINES_HOUSE = 1.45  # x к честному шансу бомбы на клетке
 
-/* ===== hall/hall-live.js ===== */
-try{
-(()=>{'use strict';const root=document.documentElement,host=document.querySelector('.bg-wide'),wrap=document.querySelector('.wheel-wrap'),sky=document.getElementById('skyBtn');if(!host||!wrap||!sky)return;
- const active=()=>root.dataset.hall==='on',optimized=()=>root.dataset.optimized==='on'||matchMedia('(prefers-reduced-motion: reduce)').matches;
- const control=document.createElement('button');control.id='hallCurtains';control.type='button';control.innerHTML='<img alt="" width="24" height="24">';wrap.append(control);
- const light=document.createElement('img');light.className='hallSkyIcon';light.alt='';light.width=light.height=24;sky.append(light);
- const canvas=document.createElement('canvas');canvas.id='hallRoomFx';canvas.setAttribute('aria-hidden','true');host.append(canvas);const room=new HallRoomFX(canvas,{optimized:true});let projection=null,timer=0,previousSky=root.dataset.sky;
- try{root.dataset.hallCurtains=localStorage.getItem('hallCurtains')==='closed'?'closed':'open'}catch(_){root.dataset.hallCurtains='open'}
- control.onclick=e=>{e.stopPropagation();if(!active())return;const closed=root.dataset.hallCurtains!=='closed';root.dataset.hallCurtains=closed?'closed':'open';try{localStorage.setItem('hallCurtains',closed?'closed':'open')}catch(_){}window.GameAudio?.effect(closed?'curtains-close':'curtains-open')};
- function layout(){if(!active())return;const b=host.getBoundingClientRect(),w=wrap.getBoundingClientRect(),hat=document.getElementById('centerHat'),goal=hat?.hidden?document.getElementById('hatQuestion'):hat,g=goal?.getBoundingClientRect();if(!b.width||!b.height)return;
-  let cx=b.width/2,cy=b.height*.61,ww=Math.min(b.width*.88,460);
-  if(w.width&&g?.width){cx=g.x+g.width/2-b.x;cy=g.bottom-b.y;ww=w.width}else if(projection){cx=projection.contactX/projection.hostWidth*b.width;cy=projection.contactY/projection.hostHeight*b.height;ww=projection.wheelWidth/projection.hostWidth*b.width}
-  const s=Math.max(b.width/1672,b.height/941,ww/570,cy/595,(b.height-cy)/346),x=cx-836*s,y=cy-595*s;
-  projection={x,y,scale:s,contactX:cx,contactY:cy,hostWidth:b.width,hostHeight:b.height,wheelWidth:ww};for(const [key,value]of Object.entries({'--hall-x':x+'px','--hall-y':y+'px','--hall-w':1672*s+'px','--hall-h':941*s+'px'}))host.style.setProperty(key,value);
- }
- function scheduleFlicker(){if(!active()||optimized()||document.hidden){clearTimeout(timer);timer=0;return}if(timer)return;timer=setTimeout(()=>{timer=0;if(active()&&!optimized()&&!document.hidden){room.flicker();scheduleFlicker()}},19000+Math.random()*19000)}
- function sync(){const on=active(),night=root.dataset.sky==='night',closed=root.dataset.hallCurtains==='closed';control.hidden=!on;room.setOptimized(!on||optimized());for(const id of ['arcWin','arcLose']){const el=document.getElementById(id);el.setAttribute('r',on?'105.5':'120');el.setAttribute('pathLength',String(2*Math.PI*120))}if(on){light.src='/static/hall/ui/light-'+(night?'off':'on')+'.png';control.firstChild.src='/static/hall/ui/curtains-'+(closed?'closed':'open')+'.png';control.title=closed?'Открыть шторы':'Закрыть шторы';control.setAttribute('aria-label',control.title);control.setAttribute('aria-pressed',String(closed));sky.title=night?'Включить день':'Включить ночь';sky.setAttribute('aria-label',sky.title);if(previousSky!==root.dataset.sky)queueMicrotask(()=>window.GameAudio?.effect(night?'light':'light-on'));layout()}previousSky=root.dataset.sky;scheduleFlicker()}
- new MutationObserver(sync).observe(root,{attributes:true,attributeFilter:['data-hall','data-sky','data-hall-curtains','data-optimized']});new ResizeObserver(layout).observe(wrap);new ResizeObserver(layout).observe(host);document.getElementById('centerHat')?.addEventListener('load',layout);new MutationObserver(()=>requestAnimationFrame(layout)).observe(document.getElementById('view-upgrade'),{attributes:true,attributeFilter:['hidden']});window.addEventListener('resize',layout);document.addEventListener('visibilitychange',sync);
 
- const preview=document.getElementById('tpStage');new MutationObserver(()=>{const pic=preview?.querySelector('.tc-pic[data-theme="hall"]');if(!pic||pic.dataset.locked==='true'||preview.querySelector('.hall-preview-controls'))return;let night=false,closed=false;const box=document.createElement('div');box.className='hall-preview-controls';for(const kind of ['sky','curtains']){const b=document.createElement('button');b.type='button';const i=document.createElement('img');i.src='/static/hall/ui/'+(kind==='sky'?'light-on':'curtains-open')+'.png';i.alt='';b.append(i);b.title=kind==='sky'?'Включить ночь':'Закрыть шторы';b.setAttribute('aria-label',b.title);b.onclick=()=>{if(kind==='sky')night=!night;else closed=!closed;pic.querySelector('img').src='/static/hall/room/'+(night?'night':'day')+'-'+(closed?'closed':'open')+'.png';i.src='/static/hall/ui/'+(kind==='sky'?'light-'+(night?'off':'on'):'curtains-'+(closed?'closed':'open'))+'.png';b.title=kind==='sky'?(night?'Включить день':'Включить ночь'):(closed?'Открыть шторы':'Закрыть шторы');b.setAttribute('aria-label',b.title)};box.append(b)}preview.append(box)}).observe(preview,{childList:true,subtree:true});
- document.addEventListener('click',e=>{if(!active())return;const b=e.target.closest('button');if(!b||b.disabled)return;const sound=b.matches('.kq-tab')?'shop-tab':b.matches('.shop-card')?'shop-open':b.matches('.weapon-card')?'gear-preview':b.matches('#wpApply')?'equip':b.matches('#settingsBtn')?'settings-open':null;if(sound)window.GameAudio?.effect(sound)});
- function spinPointer(pointer,from,target,fast){const quick=fast||optimized(),ms=quick?1300:4020,end=from+(quick?3:6)*360+((target-from+360)%360);wrap.classList.add('hall-charging');window.GameAudio?.effect('spin-start');pointer.classList.remove('spinning');pointer.style.transform=`rotate(${from}deg)`;let animation;
-  try{animation=pointer.animate([{transform:`rotate(${from}deg)`,offset:0,easing:'ease-in-out'},{transform:`rotate(${from-7}deg)`,offset:.1,easing:'cubic-bezier(.12,.62,.08,1)'},{transform:`rotate(${end}deg)`,offset:1}],{duration:ms,fill:'forwards'})}catch(_){pointer.style.transform=`rotate(${end}deg)`}
-  setTimeout(()=>wrap.classList.remove('hall-charging'),quick?130:420);setTimeout(()=>{pointer.style.transform=`rotate(${end}deg)`;animation?.cancel();if(active()){wrap.classList.add('hall-settle');setTimeout(()=>wrap.classList.remove('hall-settle'),500);window.GameAudio?.effect('spin-stop')}},ms);return{deg:end,ms}
- }
- window.HallLive={spinPointer,layout,get projection(){return projection}};sync();
-})();
-}catch(e){console.error("[app.js] hall/hall-live.js",e)}
-;
+# ---------- API models ----------
+class BetIn(BaseModel):
+    amount: int
 
-/* ===== app-viewport.js ===== */
-try{
-(()=>{'use strict';let connected=null,requested=false;const root=document.documentElement;
- function safe(){const app=window.Telegram?.WebApp;if(!app)return;for(const edge of ['top','bottom','left','right']){const system=Math.max(0,Number(app.safeAreaInset?.[edge])||0),content=Math.max(0,Number(app.contentSafeAreaInset?.[edge])||0);root.style.setProperty('--app-inset-'+edge,(system+content)+'px')}root.dataset.fullscreen=app.isFullscreen?'on':'off'}
- function connect(){const app=window.Telegram?.WebApp;if(!app)return;const native=!!app.initData||!['unknown','weba','webk','web'].includes(app.platform||'unknown');try{app.expand?.()}catch(_){}if(connected!==app){connected=app;for(const event of ['safeAreaChanged','contentSafeAreaChanged','fullscreenChanged','viewportChanged'])try{app.onEvent?.(event,safe)}catch(_){}}
-  safe();if(native&&!requested&&!app.isFullscreen&&app.requestFullscreen&&(!app.isVersionAtLeast||app.isVersionAtLeast('8.0'))){requested=true;try{app.requestFullscreen()}catch(_){}}
- }
- window.GameViewport={connect,safe};connect();document.getElementById('telegramSdk')?.addEventListener('load',connect);
 
- if(!window.Telegram?.WebApp?.initData)document.addEventListener('pointerdown',()=>{const app=window.Telegram?.WebApp;if(app?.initData)return;if(!document.fullscreenElement&&document.fullscreenEnabled)try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(_){}},{once:true});
-})();
-}catch(e){console.error("[app.js] app-viewport.js",e)}
-;
+class MinesStart(BaseModel):
+    amount: int
+    mines: int  # 3,5,8
 
-/* ===== personal-boss.js ===== */
-try{(function(){
-'use strict';
-// Personal boss on the player side: spawn notice with rules, HP bar the skeleton hangs on, countdown,
-// hit / death animations and the reward window. Data: state.personal_boss and /api/state/personal-boss.
-(() => {
- // the game script runs in a closure; it hands this file what it needs as window.HatDrop (end of the game script in index.html)
- const HD = window.HatDrop;
- if (!HD) return;
- const T = (s, v) => { try { return HD.tr(s, v); } catch (_) { return s; } };
- const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
- const num = (n, d = 2) => { try { return HD.fmt(n, d); } catch (_) { return (+n).toFixed(d); } };
- const busyGame = () => { try { return HD.busy(); } catch (_) { return false; } };
- const otherModal = () => [...document.querySelectorAll('.modal:not([hidden])')].some((m) => !m.classList.contains('pb-modal'));
- const reduced = () => document.documentElement.dataset.optimized === 'on' || matchMedia('(prefers-reduced-motion: reduce)').matches;
 
- // ---------- pixel art (viewBox 0 0 76 100 = 38x50 cells of 2 units; the bar top sits at y=38) ----------
- const PAL = { K: '#22140c', W: '#efe4c8', S: '#bfae86', D: '#1a0d07', E: '#ff9a2a', Y: '#fff3b0', L: '#fffaf0' };
- const sprite = (rows, ox, oy, px = 2) => rows.map((row, r) => {
-  let out = '';
-  for (let i = 0; i < row.length;) {
-   const c = row[i]; let j = i; while (j < row.length && row[j] === c) j++;
-   if (c !== '.') out += `<rect${c === 'E' || c === 'Y' ? ' class="pb-eye"' : ''} x="${ox + i * px}" y="${oy + r * px}" width="${(j - i) * px}" height="${px}" fill="${PAL[c]}"/>`;
-   i = j;
-  }
-  return out;
- }).join('');
- const SKULL = ['....KKKKKK....', '..KKWWWWWWKK..', '.KWLLWWWWWWWK.', 'KWLWWWWWWWWWSK', 'KWWWWWWWWWWWSK', 'KWDDDDWWDDDDSK', 'KWDEEDWWDEEDSK',
-  'KWDEYDWWDYEDSK', 'KWDDDDWWDDDDSK', 'KSWWWWKKWWWWSK', '.KSWWWKKWWWSK.', '.KSSWWWWWWSSK.', '..KWKWKWKWKWK.'];
- const JAW = ['KWKWKWKWKWKK', 'KSWWWWWWWWSK', '.KSSWWWWSSK.', '..KKKKKKKK..'];
- const CRACK = ['K.', '.K', 'K.', '.K'];
- const TORSO = ['.KKKKKKKKKKKKKKKK.', 'KWWWWWWWWWWWWWWWWK', '.KKKKKKKWWKKKKKKK.', '..KWWWWKWWKWWWWK..', '.KWKKKKKWWKKKKKWK.', '.KWK...KWWK...KWK.',
-  '..KWWWWKWWKWWWWK..', '.KWKKKKKWWKKKKKWK.', '.KWK...KWWK...KWK.', '..KWWWWKWWKWWWWK..', '...KKKKKWWKKKKK...', '.......KWWK.......', '.......KWWK.......',
-  '....KKKKWWKKKK....', '...KWWWWWWWWWWK...', '...KWDDWWWWDDWK...', '....KWWK..KWWK....', '.....KK....KK.....'];
- const LEGS = ['..KWK..KWK..', '..KWK..KWK..', '..KWK..KWK..', '..KWK..KWK..', '.KWWK..KWWK.', '..KWK..KWK..', '..KWK..KWK..', '..KWK..KWK..',
-  '..KWK..KWK..', '.KWWK..KWWK.', 'KWWWK..KWWWK', 'KKKKK..KKKKK'];
- const ARM = ['..K.K.K....', '..KWKWKWK..', '..KWWWWWK..', '...KWWWK...', '....KWK....', '....KWK....', '....KWK....', '....KWWK...', '.....KWWK..',
-  '......KWWK.', '.......KWWK', '........KWK', '........KWK', '........KWK'];
- const mirror = (rows) => rows.map((r) => [...r].reverse().join(''));
- const HAND = ['..KKKKK..', '.KWWWWWK.', 'KWWSWSWWK', 'KWKWKWKWK', 'KWKWKWKWK', 'KWKWKWKWK', '.K.K.K.K.'];
- function skeleton(cls, withArms = false, viewBox = '0 0 76 100') {
-  return `<svg class="${cls} pb-skel" viewBox="${viewBox}" aria-hidden="true" shape-rendering="crispEdges">
-<g class="pb-legs">${sprite(LEGS, 26, 74)}</g>
-<g class="pb-torso">${sprite(TORSO, 20, 38)}</g>
-${withArms ? `<g class="pb-armsbig">${sprite(ARM, 0, 12)}${sprite(mirror(ARM), 54, 12)}</g>` : ''}
-<g class="pb-head">${sprite(SKULL, 24, 4)}<g class="pb-crack">${sprite(CRACK, 42, 6)}</g></g>
-<g class="pb-jaw">${sprite(JAW, 26, 30)}</g>
-</svg>`;
- }
- const HANDS = `<svg class="pb-hands" viewBox="0 0 96 18" aria-hidden="true" shape-rendering="crispEdges"><g>${sprite(HAND, 9, 0)}</g><g>${sprite(HAND, 69, 0)}</g></svg>`;
+class MinesOpen(BaseModel):
+    cell: int
 
- // ---------- state ----------
- let view = null, skew = 0, lastId = '', lastRemaining = null, introFor = '', resultFor = '', dyingFor = '', pollTimer = 0, polling = false, hudShown = null;
 
- const left = () => view ? Math.max(0, view.end - (Date.now() / 1000 + skew)) : 0;
- const clock = (s) => { s = Math.ceil(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(x).padStart(2, '0'); };
- const durationText = (v) => { const m = Math.round((v.end - v.start) / 60); return m % 60 === 0 ? (m === 60 ? T('1 час') : T('{n} ч', { n: m / 60 })) : T('{n} мин', { n: m }); };
- const rateText = (v) => { const u = +(v.rates?.upgrade ?? 1), c = +(v.rates?.chests ?? 1); return u === 1 && c === 1 ? T('1 GRAM ставки = 1 HP урона') : T('1 GRAM ставки = 1 HP урона (апгрейды ×{u}, сундуки ×{c})', { u, c }); };
+class ArenaJoin(BaseModel):
+    amount: int = 0
+    gift_id: Optional[str] = None
 
- function hud() {
-  let node = document.getElementById('pbHud');
-  if (node) return node;
-  const host = document.getElementById('view-upgrade');
-  if (!host) return null;
-  node = document.createElement('div');
-  node.id = 'pbHud'; node.hidden = true;
-  node.innerHTML = `<div class="pb-row"><span class="pb-title">☠ ${esc(T('Личный босс'))}</span><span class="pb-timer"></span></div>${skeleton('pb-body')}<div class="pb-bar" role="progressbar" aria-label="${esc(T('HP личного босса'))}" aria-valuemin="0"><i class="pb-ghost"></i><i class="pb-fill"></i><span class="pb-hp"></span></div>${HANDS}<button class="pb-info" type="button" aria-label="${esc(T('Правила личного босса'))}">?</button>`;
-  node.querySelector('.pb-info').onclick = () => view && openIntro(view, true);
-  const live = document.getElementById('bossLiveHud');
-  if (live && live.parentNode === host) live.after(node); else host.prepend(node);
-  return node;
- }
- function chip() {
-  let node = document.getElementById('pbChip');
-  if (node) return node;
-  node = document.createElement('button');
-  node.id = 'pbChip'; node.type = 'button'; node.hidden = true;
-  node.innerHTML = `${skeleton('pb-chip-skull', false, '20 2 36 38')}<span><b>${esc(T('Личный босс'))}</b><br><span class="pb-chip-time"></span></span>`;
-  node.onclick = () => { try { HD.showView('upgrade'); } catch (_) {} };
-  document.body.append(node);
-  return node;
- }
- function setHudVisible(on) {
-  const node = hud(); if (!node) return;
-  if (node.hidden === !on && hudShown === on) return;
-  node.hidden = !on; hudShown = on;
-  try { HD.fitUpgrade(); } catch (_) {}
- }
 
- function paintBar(v) {
-  const node = hud(); if (!node) return;
-  const frac = v.hp > 0 ? Math.max(0, Math.min(1, v.remaining / v.hp)) : 0;
-  node.querySelector('.pb-fill').style.transform = `scaleX(${frac})`;
-  node.querySelector('.pb-ghost').style.transform = `scaleX(${frac})`;
-  node.querySelector('.pb-hp').textContent = `${num(v.remaining, 2)} / ${num(v.hp, 0)} HP`;
-  const bar = node.querySelector('.pb-bar'); bar.setAttribute('aria-valuemax', v.hp); bar.setAttribute('aria-valuenow', v.remaining);
-  node.classList.toggle('low', frac < .3);
-  node.querySelector('.pb-title').textContent = v.name || T('Скелет');
- }
+class UpgradeIn(BaseModel):
+    amount: int
+    mult: int  # 2, 5, 10
 
- function playHit(amount) {
-  const node = hud(); if (!node || node.hidden) return;
-  node.classList.remove('hit'); void node.offsetWidth; node.classList.add('hit');
-  setTimeout(() => node.classList.remove('hit'), 420);
-  const pop = document.createElement('span'); pop.className = 'pb-dmg'; pop.textContent = '−' + num(amount, 2) + ' HP';
-  node.append(pop); setTimeout(() => pop.remove(), 1200);
-  try { HD.haptic('impact', 'light'); } catch (_) {}
- }
 
- function tick() {
-  const node = document.getElementById('pbHud'), c = document.getElementById('pbChip');
-  if (!view || view.status !== 'active') { if (c) c.hidden = true; return; }
-  const s = left(), text = clock(s);
-  if (node) { const t = node.querySelector('.pb-timer'); t.textContent = '⏳ ' + text; t.classList.toggle('urgent', s < 300); }
-  document.querySelectorAll('[data-pb-left]').forEach((e) => { e.textContent = text; });
-  const onUpgrade = !document.getElementById('view-upgrade')?.hidden;
-  const box = chip(); box.hidden = onUpgrade || otherModal(); box.querySelector('.pb-chip-time').textContent = text;
-  if (s <= 0) poll(true);
- }
+class CheckCreate(BaseModel):
+    amount: int
+    uses: int = 1  # сколько раз можно активировать (1 = одноразовый)
 
- // ---------- modals ----------
- function modal(id, cls, inner) {
-  document.getElementById(id)?.remove();
-  const node = document.createElement('div');
-  node.id = id; node.className = `modal pb-modal ${cls}`; node.setAttribute('role', 'dialog'); node.setAttribute('aria-modal', 'true');
-  node.innerHTML = `<div class="modal-card">${inner}</div>`;
-  document.body.append(node);
-  return node;
- }
- const award = (a, i) => `<div class="pb-award" style="--i:${i}">${a.mystery ? '<span class="pb-mystery" aria-hidden="true">?</span>' : `<img src="${esc(a.image)}" alt="">`}<span>${esc(a.name)}</span>${a.value != null ? `<small>≈ ${esc(num(a.value, 2))} GRAM</small>` : ''}${a.already ? `<small>${esc(T('уже в коллекции'))}</small>` : ''}</div>`;
- // the gift is a surprise until the boss falls (the result window shows what dropped)
- const rewardCards = (v) => [{ name: T('Случайный подарок'), mystery: true }, ...(v.hand ? [{ name: v.hand.name, image: v.hand.image }] : [])].map(award).join('');
 
- // each child of the card fades in one after another (--n)
- const stagger = (node) => [...node.querySelector('.modal-card').children].forEach((el, i) => el.style.setProperty('--n', i));
+class CheckActivate(BaseModel):
+    code: str
 
- function openIntro(v, rules = false) {
-  introFor = v.id;
-  const node = modal('pbIntro', 'pb-intro', `
-   <div class="pb-top">
-    <span class="pb-tag">☠ ${esc(T('Личный босс'))}</span>
-    <h2>${esc(rules ? T('Правила личного босса') : (v.name || T('Скелет')))}</h2>
-    <p class="pb-lead">${esc(rules ? T('Как победить босса') : T('Пришёл только за тобой — у других игроков его нет.'))}</p>
-   </div>
-   <div class="pb-stats">
-    <div><small>${esc(T('Здоровье'))}</small><b>${esc(num(v.hp, 0))} HP</b></div>
-    <div><small>${esc(T('Осталось'))}</small><b data-pb-left>${clock(left())}</b></div>
-   </div>
-   <ol class="pb-steps">
-    <li>${esc(T('Делай ставки в апгрейдах и сундуках — каждая бьёт босса.'))} ${esc(rateText(v))}.</li>
-    <li>${esc(T('Победи его за {time} — иначе он уйдёт вместе с наградой.', { time: durationText(v) }))}</li>
-    <li>${esc(T('Здоровье и таймер видны над колесом апгрейда.'))}</li>
-   </ol>
-   <div class="pb-label">${esc(T('Награда за победу'))}</div>
-   <div class="pb-awards">${rewardCards(v)}</div>
-   <div class="pb-actions"><button class="cta" type="button" data-pb-go>${esc(rules ? T('Понятно') : T('В бой!'))}</button></div>`);
-  stagger(node);
-  node.querySelector('[data-pb-go]').onclick = async () => {
-   node.remove();
-   if (!v.intro_seen) { v.intro_seen = true; try { await HD.api('/api/personal-boss/ack', { id: v.id, kind: 'intro' }); } catch (_) {} }
-   try { HD.showView('upgrade'); } catch (_) {}
-  };
-  if (!rules) { try { HD.haptic('notification', 'warning'); } catch (_) {} }
-  node.querySelector('[data-pb-go]').focus();
-  node.querySelector('.modal-card').scrollTop = 0;
- }
 
- function openResult(v) {
-  resultFor = v.id;
-  const won = v.status === 'defeated';
-  const node = modal('pbResult', won ? 'pb-win' : 'pb-gone', won ? `
-   <div class="pb-top">
-    <span class="pb-tag">${esc(T('Победа'))}</span>
-    <h2>${esc(T('Босс повержен!'))}</h2>
-    <p class="pb-lead">${esc(T('Награды уже твои: подарок — в инвентаре, снаряжение — в коллекции.'))}</p>
-   </div>
-   <div class="pb-label">${esc(T('Тебе выпало'))}</div>
-   <div class="pb-awards">${(v.awards || []).map(award).join('')}</div>
-   <div class="pb-actions"><button class="cta" type="button" data-pb-claim>${esc(T('Забрать'))}</button></div>` : `
-   <div class="pb-top">
-    <span class="pb-tag">${esc(T('Время вышло'))}</span>
-    <h2>${esc(T('Босс ушёл'))}</h2>
-    <p class="pb-lead">${esc(T('Он скрылся вместе с наградой. Следующий личный босс появится в случайный момент.'))}</p>
-   </div>
-   <div class="pb-actions"><button class="cta" type="button" data-pb-claim>${esc(T('Понятно'))}</button></div>`);
-  stagger(node);
-  const button = node.querySelector('[data-pb-claim]');
-  button.onclick = async () => {
-   button.disabled = true;
-   try {
-    const r = await HD.api('/api/personal-boss/ack', { id: v.id, kind: 'result' });
-    node.remove(); view = r.personal_boss; if (HD.state) HD.state.personal_boss = view;
-    if (won) { try { await HD.refresh(); } catch (_) {} }
-   } catch (_) { button.disabled = false; try { HD.toast(T('Не удалось подтвердить. Попробуйте ещё раз.')); } catch (__) {} }
-  };
-  try { HD.haptic('notification', won ? 'success' : 'error'); } catch (_) {}
-  button.focus();
-  node.querySelector('.modal-card').scrollTop = 0;
- }
+class GiftSell(BaseModel):
+    gift_id: str
 
- function finishInHud(v) {
-  dyingFor = v.id;
-  const node = hud();
-  const onUpgrade = node && !document.getElementById('view-upgrade')?.hidden && !node.hidden;
-  if (!onUpgrade || reduced()) { setHudVisible(false); openResult(v); return; }
-  paintBar({ ...v, remaining: 0 });
-  node.classList.add('dying');
-  setTimeout(() => { node.classList.remove('dying'); setHudVisible(false); openResult(v); }, 1750);
- }
 
- // ---------- main render ----------
- function render(v, fresh = true) {
-  if (v && fresh && v.now) skew = v.now - Date.now() / 1000;
-  view = v || null;
-  if (!view) { setHudVisible(false); tick(); schedule(); return; }
-  if (view.status === 'active') {
-   hud();
-   if (!document.getElementById('pbHud')?.classList.contains('dying')) setHudVisible(true);
-   paintBar(view);
-   if (lastId === view.id && lastRemaining != null && view.remaining < lastRemaining - 1e-9) playHit(lastRemaining - view.remaining);
-   if (!view.intro_seen && introFor !== view.id) {
-    if (!otherModal() && !busyGame()) openIntro(view);
-   }
-  } else if (resultFor !== view.id && dyingFor !== view.id) {
-   if (busyGame() || otherModal()) setTimeout(() => { if (view && view.id === v.id) render(view, false); }, 600);
-   else if (view.status === 'defeated') finishInHud(view);
-   else { setHudVisible(false); openResult(view); }
-  }
-  lastId = view.id; lastRemaining = view.status === 'active' ? view.remaining : 0;
-  tick(); schedule();
- }
+class GiftWithdraw(BaseModel):
+    gift_id: str
 
- async function poll(now = false) {
-  if (polling || (document.hidden && !now)) return schedule();
-  polling = true;
-  try { const r = await HD.api('/api/state/personal-boss'); if (HD.state) HD.state.personal_boss = r.personal_boss; render(r.personal_boss); }
-  catch (_) { schedule(); }
-  finally { polling = false; }
- }
- function schedule() {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(poll, view && view.status === 'active' ? 4000 : 20000);
- }
 
- // the game calls this after every state render (refresh() after every round)
- HD.onState = (s) => { try { if (s && 'personal_boss' in s) render(s.personal_boss); } catch (e) { console.error(e); } };
- setInterval(tick, 1000);
- document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(true); });
- try { const s = HD.state; if (s && 'personal_boss' in s) render(s.personal_boss); else poll(true); } catch (_) { poll(true); }
-})();
-})()}catch(e){console.error("[app.js] personal-boss.js",e)}
-;
+class StarsWithdraw(BaseModel):
+    amount: int
 
-/* ===== deposit-ux.js ===== */
-try{(function(){
-'use strict';
-// Deposit and gift-deposit windows: X button, closing animation, gifts appearing one by one.
-(() => {
-  const CLOSE_MS = 220;
-  const closers = { depositModal: 'depositCloseBtn', giftModal: 'giftCloseBtn' };
-  let passing = false;
 
-  function animateThen(modal, run) {
-    if (modal.classList.contains('dux-closing')) return;
-    modal.classList.add('dux-closing');
-    setTimeout(() => {
-      modal.classList.remove('dux-closing');
-      passing = true;
-      try { run(); } finally { passing = false; }
-    }, CLOSE_MS);
-  }
+class AdminGive(BaseModel):
+    user: Optional[str] = None  # @username или id
+    uid: Optional[int] = None
+    amount: int = 0
 
-  // Let the existing close handlers run only after the closing animation.
-  document.addEventListener('click', (e) => {
-    if (passing) return;
-    const t = e.target;
-    for (const [modalId, btnId] of Object.entries(closers)) {
-      const modal = document.getElementById(modalId);
-      if (!modal || modal.hidden) continue;
-      const btn = document.getElementById(btnId);
-      const isX = t.closest && t.closest('.dux-x') && modal.contains(t);
-      if (isX || (btn && t === btn) || t === modal) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        animateThen(modal, () => { if (btn) btn.click(); else modal.hidden = true; });
-        return;
-      }
-    }
-  }, true);
 
-  function addX(modalId) {
-    const card = document.querySelector('#' + modalId + ' .modal-card');
-    if (!card || card.querySelector('.dux-x')) return;
-    const x = document.createElement('button');
-    x.type = 'button';
-    x.className = 'dux-x';
-    x.setAttribute('aria-label', 'Закрыть');
-    x.textContent = '✕';
-    card.prepend(x);
-  }
+class AdminGift(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None
+    link: str = ""
+    price: int = 0
+    title: str = "Gift"
 
-  function decorate(list) {
-    const items = list.querySelectorAll('.gift-item:not([data-dux])');
-    let i = list.querySelectorAll('.gift-item[data-dux]').length;
-    for (const item of items) {
-      item.dataset.dux = '1';
-      item.style.setProperty('--dux-i', String(Math.min(i++, 24)));
-      const img = item.querySelector('img');
-      if (img) {
-        if (img.complete && img.naturalWidth) img.classList.add('dux-loaded');
-        else img.addEventListener('load', () => img.classList.add('dux-loaded'), { once: true });
-      }
-    }
-  }
 
-  function skeletons(list) {
-    if (list.querySelector('.gift-item, .dux-skel')) return;
-    for (let i = 0; i < 6; i++) {
-      const s = document.createElement('div');
-      s.className = 'dux-skel';
-      list.appendChild(s);
-    }
-  }
+class AdminOdds(BaseModel):
+    slot_777: Optional[float] = None
+    slot_triple: Optional[float] = None
 
-  function init() {
-    Object.keys(closers).forEach(addX);
-    const list = document.getElementById('giftList');
-    if (!list) return;
-    let loadingText = null;
-    new MutationObserver(() => {
-      const note = list.querySelector('.gift-empty');
-      // Placeholders stay while only the "loading" note is shown.
-      if (list.querySelector('.gift-item') || !note || note.textContent !== loadingText) {
-        list.querySelectorAll('.dux-skel').forEach((s) => s.remove());
-        loadingText = null;
-      }
-      decorate(list);
-    }).observe(list, { childList: true, subtree: true, characterData: true });
-    const modal = document.getElementById('giftModal');
-    new MutationObserver(() => {
-      if (modal.hidden) return;
-      const note = list.querySelector('.gift-empty');
-      if (note && !list.querySelector('.gift-item')) {
-        loadingText = note.textContent;
-        skeletons(list);
-      }
-    }).observe(modal, { attributes: true, attributeFilter: ['hidden'] });
-  }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-})();
-})()}catch(e){console.error("[app.js] deposit-ux.js",e)}
-;
+class AdminForce(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None  # None = clear
 
-/* ===== ui-fixes.js ===== */
-try{(function(){
-'use strict';
-// Desktop helpers: Esc closes the top dialog.
-(() => {
-  const CLOSE_RE = /^(закрыть|понятно|close|ok|отмена)$/i;
 
-  function topModal() {
-    const open = [...document.querySelectorAll('.modal:not([hidden])')];
-    if (!open.length) return null;
-    open.sort((a, b) => (parseInt(getComputedStyle(a).zIndex, 10) || 0) - (parseInt(getComputedStyle(b).zIndex, 10) || 0));
-    return open[open.length - 1];
-  }
+class AdminOwner2(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None
 
-  function closeButton(modal) {
-    const x = modal.querySelector('.dux-x');
-    if (x) return x;
-    const byId = [...modal.querySelectorAll('button[id]')].find((b) => /close/i.test(b.id) && !b.disabled);
-    if (byId) return byId;
-    return [...modal.querySelectorAll('button')].reverse().find((b) => !b.disabled && CLOSE_RE.test(b.textContent.trim()));
-  }
 
-  // Tap the chance (or the spin cost) under the wheel to type your own chance.
-  function chanceLimits() {
-    const num = (id, d) => parseInt(((document.getElementById(id) || {}).textContent || '').replace(/\D/g, ''), 10) || d;
-    return [num('chanceMin', 1), num('chanceMax', 70)];
-  }
+def resolve_target(body) -> int:
+    """user (@ник / id) или uid → int id."""
+    ref = getattr(body, "user", None) or ""
+    if not ref and getattr(body, "uid", None) is not None:
+        ref = str(body.uid)
+    ref = str(ref or "").strip()
+    if not ref:
+        raise HTTPException(400, "укажи @username или id")
+    tid = db.parse_user_ref(ref)
+    if not tid:
+        raise HTTPException(404, "игрок не найден: " + ref + " (должен зайти в аппку хоть раз)")
+    return int(tid)
 
-  function openChanceDialog() {
-    const input = document.getElementById('chanceInput');
-    if (!input || input.disabled) return;
-    const [min, max] = chanceLimits();
-    let modal = document.getElementById('chanceModal');
-    if (!modal) {
-      modal = document.createElement('div');
-      modal.className = 'modal'; modal.id = 'chanceModal'; modal.hidden = true;
-      modal.innerHTML = '<section class="modal-card chance-card" role="dialog" aria-modal="true" aria-labelledby="chanceModalTitle">'
-        + '<h2 id="chanceModalTitle">Свой шанс</h2><p class="chance-hint"></p>'
-        + '<div class="chance-field"><input type="number" inputmode="numeric" step="1" id="chanceModalInput"><span>%</span></div>'
-        + '<p class="chance-error" hidden></p>'
-        + '<button class="cta" type="button" id="chanceModalOk">Применить</button>'
-        + '<button class="ghost" type="button" id="chanceModalClose">Закрыть</button></section>';
-      document.body.appendChild(modal);
-      const field = modal.querySelector('#chanceModalInput'), err = modal.querySelector('.chance-error');
-      const close = () => { modal.hidden = true; };
-      const apply = () => {
-        const [lo, hi] = chanceLimits();
-        const v = Number(field.value);
-        if (!Number.isInteger(v) || v < lo || v > hi) {
-          err.textContent = `Введите целое число от ${lo} до ${hi}`; err.hidden = false; field.focus(); return;
+
+
+class AdminTakeGift(BaseModel):
+    uid: int
+    gift_id: str
+
+
+class ConfirmDep(BaseModel):
+    note: str = ""
+
+
+# ---------- routes static ----------
+@app.get("/")
+async def index():
+    return FileResponse(
+        os.path.join(STATIC, "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/api/health")
+async def api_health():
+    return {"ok": True}
+
+
+@app.get("/api/me")
+async def api_me(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None, alias="X-Telegram-Id"),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        h2 = (
+            request.headers.get("x-telegram-id")
+            or request.headers.get("X-Telegram-Id")
+            or request.headers.get("x-telegram-userid")
+        )
+        uid = require_uid(x_telegram_id or h2, tg_id)
+        un = (request.query_params.get("username") or "").lstrip("@")
+        first = request.query_params.get("first_name") or ""
+        photo = request.query_params.get("photo_url") or ""
+        db.ensure_user(uid, un or first or "")
+        users = db.get_users()
+        k = str(uid)
+        if k in users:
+            if un:
+                users[k]["username"] = un.lower()
+            if first:
+                users[k]["first_name"] = first
+            if photo:
+                users[k]["photo_url"] = photo
+            db.save_users(users)
+        return {
+            "user": public_user(uid),
+            "bank": BANK,
+            "min_bet": MIN_BET,
+            "withdraw_fee": WITHDRAW_FEE,
+            "min_withdraw": MIN_WITHDRAW,
+            "mod_give_max": MOD_GIVE_MAX,
         }
-        input.value = String(v);
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        close();
-      };
-      modal.querySelector('#chanceModalOk').addEventListener('click', apply);
-      modal.querySelector('#chanceModalClose').addEventListener('click', close);
-      field.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
-      field.addEventListener('input', () => { err.hidden = true; });
-      modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("api_me failed")
+        raise HTTPException(500, f"me_error: {type(e).__name__}: {e}")
+
+
+@app.get("/api/history")
+async def api_history(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    h = [x for x in db.get_history() if int(x.get("uid", 0)) == uid][:50]
+    return {"history": h}
+
+
+@app.get("/api/top")
+async def api_top(x_telegram_id: Optional[str] = Header(None)):
+    require_uid(x_telegram_id)
+    users = db.get_users()
+    rows = sorted(
+        [{"uid": k, **v} for k, v in users.items()],
+        key=lambda x: int(x.get("deposited") or 0),
+        reverse=True,
+    )
+    s = db.get_settings()
+    return {
+        "top": [
+            {
+                "username": r.get("username"),
+                "deposited": int(r.get("deposited") or 0),
+                "wager": int(r.get("wager") or 0),
+            }
+            for r in rows[:30]
+        ],
+        "prizes": s.get("top_prizes") or [],
     }
-    const field = modal.querySelector('#chanceModalInput');
-    field.min = String(min); field.max = String(max);
-    field.value = parseInt((document.getElementById('modeChance') || {}).textContent, 10) || '';
-    modal.querySelector('.chance-hint').textContent = `От ${min}% до ${max}%. Чем выше шанс, тем дороже прокрут.`;
-    modal.querySelector('.chance-error').hidden = true;
-    modal.hidden = false;
-    setTimeout(() => { field.focus(); field.select(); }, 50);
-  }
 
-  document.addEventListener('click', (e) => {
-    if (e.target.closest && e.target.closest('#modeChance, .mode-tag.mode-cost')) openChanceDialog();
-  });
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
-    const modal = topModal();
-    if (!modal) return;
-    const btn = closeButton(modal);
-    if (!btn) return;
-    e.preventDefault();
-    btn.click();
-  });
-})();
+# ---------- SLOTS 777 ----------
+@app.post("/api/slots/spin")
+async def slots_spin(body: BetIn, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    try:
+        change_balance(uid, -amount, "slots_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
 
-// Onyx and Black hats are hidden: if one of them is the selected tier, switch to gifts.
-(() => {
-  const fix = () => {
-    const active = document.querySelector('.tier-btn.active[data-tier="onyx"], .tier-btn.active[data-tier="black"]');
-    if (active) (document.querySelector('.tier-btn[data-tier="gift"]') || document.querySelector('.tier-btn[data-tier="random"]'))?.click();
-  };
-  setInterval(fix, 1500);
-  document.addEventListener('DOMContentLoaded', fix);
-})();
+    st = db.get_settings()
+    p777 = float(st.get("slot_777") or 0.006)  # редко, казино в плюсе
+    # фрукты чуть чаще; 777 редко
+    pool = ["🍒", "🍒", "🍒", "🍒", "🍋", "🍋", "🍋", "🔔", "🔔", "⭐", "⭐", "💎", "7️⃣"]
+    fruits = ["🍒", "🍋", "🔔", "⭐", "💎"]
+    r = random.random()
 
-// Theme and day/night switches: at most one switch per second.
-(() => {
-  let last = 0;
-  window.addEventListener('click', (e) => {
-    if (!e.target.closest || !e.target.closest('#skyBtn, #tpApply')) return;
-    const now = Date.now();
-    if (now - last < 1000) { e.preventDefault(); e.stopImmediatePropagation(); return; }
-    last = now;
-  }, true);
-})();
+    if r < p777:
+        reels = ["7️⃣", "7️⃣", "7️⃣"]
+        mult = 10
+    elif r < p777 + 0.09:
+        sym = random.choice(fruits)
+        reels = [sym, sym, sym]
+        mult = 3
+    elif r < p777 + 0.09 + 0.22:
+        sym = random.choice(fruits)
+        other = random.choice([x for x in pool if x != sym])
+        reels = [sym, sym, other]
+        mult = 1.5
+    elif r < p777 + 0.09 + 0.22 + 0.14:
+        sym = random.choice(fruits)
+        mid = random.choice([x for x in fruits if x != sym])
+        reels = [sym, mid, sym]
+        mult = 1.2
+    else:
+        a = random.choice(pool)
+        b = random.choice(pool)
+        c = random.choice(pool)
+        if a == b == c:
+            c = random.choice([x for x in fruits if x != a] or fruits)
+        if a == "7️⃣" and b == "7️⃣" and c == "7️⃣":
+            c = "🍒"
+        reels = [a, b, c]
+        mult = 0
 
-// Long gift names and prices: shrink the font until the text fits its box.
-(() => {
-  const SELECTOR = '.gp-name, .gp-price, .pname, .gift-name, .gift-price, .inv-name, .inv-price, .prize-name, .prize-price, '
-    + '.cx-gift-name, .prize-value, .wd-btn, .stake-item b, .weapon-name, .upgrade-prize, .lb-prize-name, #cxWinGift, #bossLiveName, #statBestName, #lbPrizeName, #lbPrizeValue, #shopModalPrice, #stakingDepositName, #wpName, #tpName';
-  const MIN = 0.72;
-  function fit(el) {
-    if (!el.isConnected || !el.clientWidth) return;
-    el.classList.add('fit-text');
-    el.style.fontSize = '';
-    const base = parseFloat(getComputedStyle(el).fontSize) || 0;
-    if (!base || el.scrollWidth <= el.clientWidth + 1) return;
-    let size = base * Math.max(MIN, el.clientWidth / el.scrollWidth);
-    el.style.fontSize = size.toFixed(2) + 'px';
-    while (el.scrollWidth > el.clientWidth + 1 && size > base * MIN) {
-      size -= 0.5; el.style.fontSize = size.toFixed(2) + 'px';
+    win = int(amount * mult) if mult else 0
+    if win:
+        change_balance(uid, win, "slots_win")
+    db.add_history({"uid": uid, "type": "slots", "bet": amount, "reels": reels, "mult": mult, "win": win})
+    return {"reels": reels, "mult": mult, "win": win, "balance": public_user(uid)["balance"]}
+
+
+
+@app.post("/api/mines/start")
+async def mines_start(
+    body: MinesStart,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    mines_n = int(body.mines)
+    if mines_n not in (3, 5, 8):
+        raise HTTPException(400, "mines 3/5/8")
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > 500:
+        raise HTTPException(400, "макс ставка в минах 500★")
+    try:
+        change_balance(uid, -amount, "mines_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+
+    cells = 25
+    # бомбы НЕ загадываем заранее — решаем при каждом open (чаще, чем честно)
+    games = db.get_mines()
+    games[str(uid)] = {
+        "bet": amount,
+        "mines": mines_n,
+        "bombs": [],
+        "opened": [],
+        "alive": True,
+        "step": 0,
+        "dynamic": True,
     }
-  }
-  let queued = false;
-  const run = () => { queued = false; if (!window.__fitV2) document.querySelectorAll(SELECTOR).forEach(fit); };
-  const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(run); } };
-  new MutationObserver((list) => {
-    if (list.some((m) => m.type === 'childList' || m.type === 'characterData' || (m.attributeName === 'hidden'))) schedule();
-  }).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
-  addEventListener('resize', schedule);
-  document.addEventListener('DOMContentLoaded', schedule);
-  // the pixel font arrives after the first layout: measure again once it is in
-  try { document.fonts.ready.then(schedule); document.fonts.addEventListener('loadingdone', schedule); } catch (_) {}
-  setInterval(schedule, 2000);
-})();
+    db.save_mines(games)
+    return {"ok": True, "cells": cells, "mines": mines_n, "balance": public_user(uid)["balance"]}
 
-// Season boss: animate HP loss (bar slides down, damage counts up, "-N HP" pops over the boss).
-(() => {
-  let shown = null;
-  const fmtHp = (v) => (Math.round(v * 100) / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-  // Called by renderBossLeaderboard (index.html) after it has drawn the card.
-  window.lbBossHpAnimate = (boss) => {
-    {
-      const result = undefined;
-      const bar = document.getElementById('lbBossHealth'), text = document.getElementById('lbBossDamage');
-      if (!boss || !bar || !text) { shown = null; return result; }
-      const to = Math.min(boss.hp, boss.damage), key = boss.name + '|' + boss.hp;
-      if (!shown || shown.key !== key || to <= shown.damage) { shown = { key, damage: to }; return result; }
-      const from = shown.damage, label = text.textContent.split(':')[0];
-      shown.damage = to;
-      const start = performance.now(), dur = 900;
-      const step = (t) => {
-        const k = Math.min(1, (t - start) / dur), e = 1 - Math.pow(1 - k, 3), d = from + (to - from) * e;
-        bar.value = Math.max(0, 1 - d / boss.hp);
-        text.textContent = `${label}: ${fmtHp(d)} / ${fmtHp(boss.hp)} HP`;
-        if (k < 1) requestAnimationFrame(step);
-      };
-      bar.value = Math.max(0, 1 - from / boss.hp);
-      requestAnimationFrame(step);
-      const card = document.getElementById('lbBoss'), art = document.getElementById('lbBossArt');
-      if (card && !card.hidden) {
-        const pop = document.createElement('div');
-        pop.className = 'lb-boss-hit'; pop.textContent = `−${fmtHp(to - from)}`;
-        const left = bar.offsetLeft + bar.offsetWidth * Math.max(0.08, Math.min(0.92, 1 - to / boss.hp));
-        pop.style.left = left + 'px'; pop.style.top = (bar.offsetTop - 4) + 'px';
-        card.appendChild(pop); setTimeout(() => pop.remove(), 1200);
-        bar.classList.remove('hit'); void bar.offsetWidth; bar.classList.add('hit');
-        if (art) { art.classList.remove('hit'); void art.offsetWidth; art.classList.add('hit'); }
-      }
-      return result;
-    }
-  };
-})();
 
-// Free spin window: an info button that explains how to earn coins with referrals.
-(() => {
-  const TEXT = [
-    'Фри спин коины дают бесплатный прокрут Шляпы.',
-    'Как получить: приглашай друзей по своей реферальной ссылке.',
-    'Друг засчитывается, когда у него 2-й уровень в Telegram и пополнение от 1 GRAM.',
-    'За каждых 10 засчитанных друзей — 1 фри спин коин.',
-  ];
-  const tr = (s) => (window.I18N && I18N.tr ? I18N.tr(s) : s);
-  function add() {
-    const card = document.querySelector('#freeCoinModal .coin-card');
-    if (!card || card.querySelector('.coin-info-btn')) return;
-    const btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'ghost coin-info-btn'; btn.textContent = 'i';
-    btn.setAttribute('aria-label', tr('Как получить фри спин коины'));
-    const box = document.createElement('div');
-    box.className = 'coin-info-box'; box.hidden = true;
-    for (const line of TEXT) { const p = document.createElement('p'); p.textContent = tr(line); box.appendChild(p); }
-    btn.addEventListener('click', () => { box.hidden = !box.hidden; });
-    card.prepend(btn);
-    card.querySelector('h2')?.after(box);
-  }
-  new MutationObserver(add).observe(document.documentElement, { childList: true, subtree: true });
-  document.addEventListener('DOMContentLoaded', add);
-})();
+@app.post("/api/mines/open")
+async def mines_open(
+    body: MinesOpen,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+        games = db.get_mines()
+        if not isinstance(games, dict):
+            games = {}
+        g = games.get(str(uid))
+        if not isinstance(g, dict) or not g.get("alive"):
+            raise HTTPException(400, "нет активной игры — нажми Начать")
+        cell = int(body.cell)
+        opened = [int(x) for x in (g.get("opened") or [])]
+        bombs = [int(x) for x in (g.get("bombs") or [])]
+        if cell in opened:
+            raise HTTPException(400, "уже открыто")
+        cells = 25
+        mines_n = int(g.get("mines") or 3)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
 
-// Gift names and prices v2: fit into the card, not just into their own box.
-// Shrink the font first; a name that still does not fit is cut ("Intelligence C…", full name in the tooltip).
-// Prices are never cut, only shrunk.
-(() => {
-  const CARDS = '.gp-head, .gp-item, .prize-card, .stake-item, .cx-win-card, .lb-prize-card, .weapon-card, .boss-prize, .shop-item, .upgrade-prize, #pbHud, #bossLiveHud';
-  const TEXT = '#gpTitle, .gp-name, .gp-price, .pname, .prize-value, .wd-btn, .sell-btn, .stake-item b, .weapon-name, .upgrade-prize, #bossLiveName, .pb-title, '
-    + '#cxWinGift, #lbPrizeName, #lbPrizeValue, #statBestName, #stakingDepositName, #shopModalPrice, .gift-name, .gift-price';
-  const PRICE = '.gp-price, .prize-value, #lbPrizeValue, #shopModalPrice, .gift-price';
-  function room(el) {
-    const card = el.closest(CARDS) || el.parentElement;
-    if (!card) return el.clientWidth;
-    const cs = getComputedStyle(card);
-    const inner = card.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const own = el.getBoundingClientRect(), box = card.getBoundingClientRect();
-    const left = Math.max(0, own.left - box.left - parseFloat(cs.paddingLeft));
-    const es = getComputedStyle(el);
-    const pad = parseFloat(es.paddingLeft) + parseFloat(es.paddingRight) + parseFloat(es.borderLeftWidth) + parseFloat(es.borderRightWidth);
-    return Math.max(10, Math.min(inner - left, el.parentElement ? el.parentElement.clientWidth : inner) - pad);
-  }
-  const textWidth = (el) => {
-    const r = document.createRange(); r.selectNodeContents(el);
-    return r.getBoundingClientRect().width;
-  };
-  function fit(el) {
-    if (!el.isConnected || el.children.length) return;
-    const shown = el.textContent;
-    if (el.dataset.fitShown === shown && el.dataset.fitWidth === String(el.parentElement?.clientWidth)) return;
-    const full = el.dataset.fitShown === shown && el.dataset.fitFull ? el.dataset.fitFull : shown;
-    const price = el.matches(PRICE);
-    el.dataset.fitFull = full;
-    el.textContent = full; el.style.fontSize = ''; el.style.maxWidth = '';
-    el.classList.add('fit-text');
-    el.style.textOverflow = price ? 'clip' : '';
-    const max = room(el);
-    const base = parseFloat(getComputedStyle(el).fontSize) || 0;
-    if (base && textWidth(el) > max + 0.5) {
-      const min = base * (price ? 0.5 : 0.65);
-      let size = Math.max(min, base * max / textWidth(el));
-      el.style.fontSize = size.toFixed(2) + 'px';
-      while (textWidth(el) > max + 0.5 && size > min) { size = Math.max(min, size - 0.25); el.style.fontSize = size.toFixed(2) + 'px'; }
-      if (!price && textWidth(el) > max + 0.5) {
-        let lo = 1, hi = full.length - 1;
-        while (lo < hi) {
-          const mid = (lo + hi + 1) >> 1;
-          el.textContent = full.slice(0, mid).trimEnd() + '…';
-          if (textWidth(el) <= max + 0.5) lo = mid; else hi = mid - 1;
+        # динамическая бомба: шанс выше честного mines/осталось
+        left_cells = cells - len(opened)  # включая текущую
+        if left_cells < 1:
+            left_cells = 1
+        fair = float(mines_n) / float(left_cells)
+        try:
+            house = float(MINES_HOUSE)
+        except Exception:
+            house = 1.45
+        p_bomb = min(0.88, fair * house)
+        is_bomb = cell in bombs or (g.get("dynamic") and random.random() < p_bomb)
+
+        if is_bomb:
+            # достраиваем карту бомб для показа
+            bomb_set = set(bombs)
+            bomb_set.add(cell)
+            need = max(0, mines_n - len(bomb_set))
+            pool = [i for i in range(cells) if i not in opened and i != cell and i not in bomb_set]
+            if need and pool:
+                bomb_set.update(random.sample(pool, min(need, len(pool))))
+            bombs = list(bomb_set)
+            g["alive"] = False
+            opened.append(cell)
+            g["opened"] = opened
+            g["bombs"] = bombs
+            games[str(uid)] = g
+            db.save_mines(games)
+            try:
+                db.add_history({"uid": uid, "type": "mines", "bet": g.get("bet"), "win": 0, "bust": True})
+            except Exception:
+                pass
+            return {
+                "bust": True,
+                "cell": cell,
+                "bombs": bombs,
+                "balance": public_user(uid)["balance"],
+            }
+
+        opened.append(cell)
+        g["opened"] = opened
+        g["bombs"] = bombs
+        g["step"] = len(opened)
+        games[str(uid)] = g
+        db.save_mines(games)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
+        mults = MINES_MULT[mines_n]
+        step = min(len(opened), len(mults) - 1)
+        mult = float(mults[step])
+        bet = int(g.get("bet") or 0)
+        can_take = int(bet * mult)
+        return {
+            "bust": False,
+            "cell": cell,
+            "step": len(opened),
+            "mult": mult,
+            "can_take": can_take,
+            "bet": bet,
         }
-        el.textContent = full.slice(0, lo).trimEnd() + '…';
-        el.title = full;
-      }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("mines_open")
+        raise HTTPException(500, "mines_open: " + str(e)[:120])
+
+
+@app.post("/api/mines/cashout")
+async def mines_cashout(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+        games = db.get_mines()
+        if not isinstance(games, dict):
+            games = {}
+        g = games.get(str(uid))
+        if not isinstance(g, dict) or not g.get("alive"):
+            raise HTTPException(400, "нет активной игры")
+        opened = [int(x) for x in (g.get("opened") or [])]
+        if not opened:
+            raise HTTPException(400, "открой хотя бы 1 клетку")
+        mines_n = int(g.get("mines") or 3)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
+        mults = MINES_MULT[mines_n]
+        step = min(len(opened), len(mults) - 1)
+        mult = float(mults[step])
+        bet = int(g.get("bet") or 0)
+        win = int(bet * mult)
+        g["alive"] = False
+        g["opened"] = opened
+        games[str(uid)] = g
+        db.save_mines(games)
+        change_balance(uid, win, "mines_win")
+        try:
+            db.add_history({"uid": uid, "type": "mines", "bet": bet, "win": win, "mult": mult})
+        except Exception:
+            pass
+        return {"win": win, "mult": mult, "balance": public_user(uid)["balance"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("mines_cashout")
+        raise HTTPException(500, "mines_cash: " + str(e)[:120])
+
+
+
+# ---------- UPGRADE (stars only) ----------
+# Исход считает ТОЛЬКО сервер (random). Клиент лишь крутит иглу под win/lose.
+UPGRADE_MAX_BET = 2500
+# База ниже «честной» → казино в плюсе.
+# Клиенту показываем 50/20/10, реально крутим эти %.
+UPGRADE_CHANCE_BASE = {
+    2: 0.40,   # ×2 — 40% (честно 50%)
+    5: 0.08,   # ×5 — 8%  (честно 20%)
+    10: 0.025, # ×10 — 2.5% (честно 10%)
+}
+# Мягкий буст после серии лузов (не форс-вин, edge сохраняется)
+# lose_streak → добавка к шансу (абсолютная)
+UPGRADE_LOSS_BOOST = {
+    2:  {3: 0.03, 4: 0.05, 5: 0.07},   # макс ~47% при 5+ лузах
+    5:  {3: 0.015, 4: 0.025, 5: 0.035}, # макс ~11.5%
+    10: {3: 0.008, 4: 0.012, 5: 0.018}, # макс ~4.3%
+}
+UPGRADE_WIN_STREAK_CAP = 3  # 4-я победа подряд = форс-луз
+
+
+def _upgrade_chance(mult: int, amount: int, lose_streak: int = 0) -> float:
+    base = float(UPGRADE_CHANCE_BASE.get(mult, 0))
+    if amount >= UPGRADE_MAX_BET:
+        if mult == 2:
+            base = 0.38
+        elif mult == 5:
+            base = 0.07
+        elif mult == 10:
+            base = 0.02
+    # soft pity: после 3/4/5 лузов чуть выше шанс, но всегда < fair
+    boosts = UPGRADE_LOSS_BOOST.get(mult) or {}
+    add = 0.0
+    if lose_streak >= 5:
+        add = float(boosts.get(5) or 0)
+    elif lose_streak >= 4:
+        add = float(boosts.get(4) or 0)
+    elif lose_streak >= 3:
+        add = float(boosts.get(3) or 0)
+    # потолок: не выше fair−1% чтобы казик оставался в плюсе
+    fair_cap = {2: 0.49, 5: 0.18, 10: 0.09}.get(mult, 0.45)
+    return min(fair_cap, base + add)
+
+
+@app.post("/api/upgrade")
+async def api_upgrade(
+    body: UpgradeIn,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    mult = int(body.mult)
+    if mult not in UPGRADE_CHANCE_BASE:
+        raise HTTPException(400, "mult 2/5/10")
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > UPGRADE_MAX_BET:
+        raise HTTPException(400, f"макс ставка в апгрейде {UPGRADE_MAX_BET}★")
+    try:
+        change_balance(uid, -amount, "upgrade_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+
+    users = db.get_users()
+    uk = str(uid)
+    if uk not in users or not isinstance(users.get(uk), dict):
+        db.ensure_user(uid)
+        users = db.get_users()
+    win_streak = int(users[uk].get("upgrade_win_streak") or 0)
+    lose_streak = int(users[uk].get("upgrade_lose_streak") or 0)
+
+    chance = _upgrade_chance(mult, amount, lose_streak)
+    if win_streak >= UPGRADE_WIN_STREAK_CAP:
+        win = False  # не более 3 побед подряд
+    else:
+        win = random.random() < chance
+
+    payout = int(amount * mult) if win else 0
+    if payout:
+        change_balance(uid, payout, "upgrade_win")
+        win_streak = win_streak + 1
+        lose_streak = 0
+    else:
+        win_streak = 0
+        lose_streak = lose_streak + 1
+
+    try:
+        users = db.get_users()
+        if uk in users and isinstance(users.get(uk), dict):
+            users[uk]["upgrade_win_streak"] = win_streak
+            users[uk]["upgrade_lose_streak"] = lose_streak
+            db.save_users(users)
+    except Exception:
+        pass
+    try:
+        db.add_history({
+            "uid": uid,
+            "type": "upgrade_win" if win else "upgrade_lose",
+            "bet": amount,
+            "mult": mult,
+            "win": payout,
+            "chance": round(chance, 4),
+            "win_streak": win_streak,
+            "lose_streak": lose_streak,
+        })
+    except Exception:
+        pass
+    return {
+        "win": win,
+        "mult": mult,
+        "bet": amount,
+        "payout": payout,
+        "chance": chance,  # можно оставить — клиент не показывает
+        "balance": public_user(uid)["balance"],
     }
-    el.dataset.fitShown = el.textContent;
-    el.dataset.fitWidth = String(el.parentElement?.clientWidth);
-  }
-  let queued = false;
-  const run = () => { queued = false; document.querySelectorAll(TEXT).forEach(fit); };
-  const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(run); } };
-  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
-  addEventListener('resize', schedule);
-  document.addEventListener('DOMContentLoaded', schedule);
-  try { document.fonts.ready.then(schedule); document.fonts.addEventListener('loadingdone', schedule); } catch (_) {}
-  setInterval(schedule, 2000);
-  window.__fitV2 = true;
-})();
 
-// Boss HUD on the main screen (Halloween): "−N HP" pops up from the end of the HP bar, the bar flashes.
-window.bossLiveHit = (damage, hp, max) => {
-  const hud = document.getElementById('bossLiveHud'), track = hud && hud.querySelector('.boss-live-track');
-  if (!hud || hud.hidden || !track) return;
-  const pop = document.createElement('div');
-  pop.className = 'boss-live-pop';
-  const n = Math.round(damage * 100) / 100;
-  pop.textContent = '−' + n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' HP';
-  const x = track.offsetLeft + track.offsetWidth * Math.max(0.06, Math.min(0.94, max ? hp / max : 0));
-  pop.style.left = x + 'px'; pop.style.top = track.offsetTop + 'px';
-  hud.appendChild(pop);
-  setTimeout(() => pop.remove(), 1300);
-  track.classList.remove('hit'); void track.offsetWidth; track.classList.add('hit');
-};
 
-// Free spin info v2: the "i" button opens its own small window with one line.
-(() => {
-  function modal() {
-    let m = document.getElementById('coinInfoModal');
-    if (m) return m;
-    m = document.createElement('div');
-    m.className = 'modal'; m.id = 'coinInfoModal'; m.hidden = true; m.style.zIndex = '400';   // above the free spin window (180)
-    m.innerHTML = '<section class="modal-card coin-card" role="dialog" aria-modal="true" aria-labelledby="coinInfoTitle">'
-      + '<h2 id="coinInfoTitle">Фри спин коины</h2><p class="coin-info-line"></p>'
-      + '<button class="cta" type="button" id="coinInfoClose">Понятно</button></section>';
-    document.body.appendChild(m);
-    const close = () => { m.hidden = true; };
-    m.querySelector('#coinInfoClose').addEventListener('click', close);
-    m.addEventListener('click', (e) => { if (e.target === m) close(); });
-    return m;
-  }
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest && e.target.closest('.coin-info-btn');
-    if (!btn) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    document.querySelectorAll('.coin-info-box').forEach((b) => { b.hidden = true; });
-    const m = modal();
-    const tr = (s) => (window.I18N && I18N.tr ? I18N.tr(s) : s);
-    m.querySelector('.coin-info-line').textContent = tr('Получайте фри спин коины за приглашения друзей');
-    m.hidden = false;
-  }, true);
-})();
+# ---------- ROCKET (crash) ----------
+# Жёстче в плюс казика: edge ~9%, выплата макс ×5, визуал до ×8
+ROCKET_BETTING_SEC = 5.0
+ROCKET_CRASH_HOLD = 2.2
+ROCKET_PAUSE_SEC = 1.2
+ROCKET_EDGE = 0.09          # базовый edge ~9%
+ROCKET_MAX_PAY = 5.0        # макс выплата игроку
+ROCKET_MAX_SHOW = 8.0       # иногда выше в истории (когда уже все вышли)
+ROCKET_GROWTH_K = 0.07      # плавнее полёт, WebView успевает
 
-// Confirm window in the game style, titled "ШЛЯПА ДРОП" (the browser one shows the site address).
-window.hdConfirm = (text) => new Promise((resolve) => {
-  let m = document.getElementById('hdConfirm');
-  if (!m) {
-    m = document.createElement('div');
-    m.className = 'modal'; m.id = 'hdConfirm'; m.hidden = true;
-    m.innerHTML = '<section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="hdConfirmTitle">'
-      + '<h2 id="hdConfirmTitle">ШЛЯПА ДРОП</h2><p class="hd-confirm-text"></p>'
-      + '<div class="hd-confirm-actions"><button class="ghost" type="button" data-answer="no">Отмена</button>'
-      + '<button class="cta" type="button" data-answer="yes">OK</button></div></section>';
-    document.body.appendChild(m);
-  }
-  const tr = (s) => (window.I18N && I18N.tr ? I18N.tr(s) : s);
-  m.querySelector('.hd-confirm-text').textContent = text;
-  m.querySelector('[data-answer=no]').textContent = tr('Отмена');
-  const done = (yes) => { m.hidden = true; m.onclick = null; resolve(yes); };
-  m.onclick = (e) => {
-    const b = e.target.closest('[data-answer]');
-    if (b) done(b.dataset.answer === 'yes'); else if (e.target === m) done(false);
-  };
-  m.hidden = false;
-  m.querySelector('[data-answer=yes]').focus();
-});
-})()}catch(e){console.error("[app.js] ui-fixes.js",e)}
-;
 
-/* ===== inventory.js ===== */
-try{
-/* Инвентарь: подарки из профиля релеера (юзербот) + вывод 25 ★.
-   API (ваш сервер):
-     GET  /api/relayer/gifts -> { relayer:{username,name,updated_at}, stock:[{id,name,image,price,count}], mine:[{id,name,image,price}] }
-     POST /api/inventory/claim {id}   — выдать подарок игроку
-     POST /api/withdraw {stars:25}    — вывод статиков
-   Если сервер не ответил — показываются демо-данные. */
-(() => {
-  'use strict';
-  const $ = (s, r = document) => r.querySelector(s);
-  const px = (rects, c) => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">${rects}</svg>`);
-  const box = (a, b, r) => px(`<rect x="1" y="6" width="14" height="9" fill="#1a0f08"/><rect x="2" y="7" width="12" height="7" fill="${a}"/><rect x="1" y="4" width="14" height="3" fill="#1a0f08"/><rect x="2" y="5" width="12" height="1" fill="${b}"/><rect x="7" y="4" width="2" height="10" fill="${r}"/><rect x="4" y="2" width="4" height="2" fill="${r}"/><rect x="8" y="2" width="4" height="2" fill="${r}"/><rect x="7" y="3" width="2" height="1" fill="#1a0f08"/>`);
-  const map = (rows, col, out = '#1a0f08') => px(rows.map((r, y) => [...r].map((ch, x) => ch === '#' ? `<rect x="${x + 2}" y="${y + 3}" width="1" height="1" fill="${col}"/>` : '').join('')).join(''));
-  const heart = map(['.##..##.', '########', '########', '.######.', '..####..', '...##...'], '#ff5a7a');
-  const cup = map(['########','#.####.#','#.####.#','.######.','..####..','...##...','..####..','.######.'], '#ffd24a');
-  const star = map(['....#....', '...###...', '#########', '.#######.', '..#####..', '.###.###.', '.#.....#.'], '#ffd24a');
-  const DEMO = {
-    relayer: { username: 'relayer', name: 'Релеер', updated_at: Date.now() },
-    stock: [
-      { id: 'g1', name: 'Кубок', image: cup, price: 12.5, count: 3 },
-      { id: 'g2', name: 'Топор', image: 'images/axe-icon.webp', price: 8, count: 2 },
-      { id: 'g3', name: 'Посох', image: 'static/weapons/staff-v4-icon.svg', price: 20, count: 1 },
-      { id: 'g4', name: 'Кристалл', image: 'images/gram-px.png', price: 5, count: 6 },
-      { id: 'g5', name: 'Сердце', image: heart, price: 15, count: 4 },
-      { id: 'g6', name: 'Звезда', image: star, price: 3, count: 10 },
-      { id: 'g7', name: 'Красный бокс', image: box('#d6392f', '#ff7a5c', '#ffd24a'), price: 25, count: 2 },
-      { id: 'g8', name: 'Синий бокс', image: box('#2f6fd6', '#6fb0ff', '#ffd24a'), price: 50, count: 1 },
-      { id: 'g9', name: 'Зелёный бокс', image: box('#2fa05a', '#7be3a0', '#ffd24a'), price: 35, count: 1 }
-    ],
-    mine: [
-      { id: 'm1', name: 'Кристалл', image: 'images/gram-px.png', price: 5 },
-      { id: 'm2', name: 'Звезда', image: star, price: 3 },
-      { id: 'm3', name: 'Красный бокс', image: box('#d6392f', '#ff7a5c', '#ffd24a'), price: 25 }
+def _rocket_gen_crash(house_pnl: int = 0, bank: int = 0) -> tuple:
+    """
+    ×1.50 не безопасная зона: часть раундов рвётся ДО 1.50 всегда.
+    Если касса в минусе — чаще краш 1.08–1.38, чтобы отыграть.
+    Большой банк живых ставок — чаще около ×2, но тоже с ранними.
+    """
+    # house_pnl: плюс = касса заработала, минус = игроки вынесли
+    lost = house_pnl < 0
+    if house_pnl < -4000:
+        heat = 3
+    elif house_pnl < -1500:
+        heat = 2
+    elif house_pnl < -400:
+        heat = 1
+    else:
+        heat = 0
+
+    big = bank >= 2500
+    huge = bank >= 8000
+
+    r = random.random()
+    # бакеты: 0 ultra-early, 1 до 1.38, 2 вокруг 1.45 (часто НИЖЕ 1.50),
+    #         3 ~x2, 4 mid-high, 5 high
+    if heat >= 3:
+        # касса сильно в минусе — вернуть: чаще до 1.40
+        weights = (0.18, 0.40, 0.26, 0.10, 0.04, 0.02)
+    elif heat >= 2:
+        weights = (0.14, 0.36, 0.28, 0.14, 0.05, 0.03)
+    elif heat >= 1:
+        weights = (0.10, 0.32, 0.30, 0.16, 0.08, 0.04)
+    elif huge:
+        # жирный банк: много до 1.45 + пачка около ×2
+        weights = (0.10, 0.24, 0.22, 0.32, 0.08, 0.04)
+    elif big:
+        weights = (0.08, 0.22, 0.24, 0.28, 0.12, 0.06)
+    else:
+        # обычный — тоже не «всегда 1.50»: ~30%+ рвётся раньше
+        weights = (0.08, 0.22, 0.28, 0.20, 0.12, 0.10)
+
+    acc = 0.0
+    bucket = 5
+    for i, w in enumerate(weights):
+        acc += w
+        if r < acc:
+            bucket = i
+            break
+
+    def rnd(a, b):
+        return a + random.random() * (b - a)
+
+    if bucket == 0:
+        crash = rnd(1.06, 1.16)
+    elif bucket == 1:
+        crash = rnd(1.16, 1.38)  # не дотягивает до 1.50
+    elif bucket == 2:
+        # специально рвём И до, И чуть после 1.50 — паттерн «забирай 1.5» ломается
+        pick = random.random()
+        if lost or heat:
+            if pick < 0.62:
+                crash = rnd(1.32, 1.47)  # не успели на 1.50
+            elif pick < 0.85:
+                crash = rnd(1.50, 1.62)
+            else:
+                crash = rnd(1.62, 1.78)
+        else:
+            if pick < 0.45:
+                crash = rnd(1.32, 1.47)
+            elif pick < 0.72:
+                crash = rnd(1.50, 1.62)
+            else:
+                crash = rnd(1.62, 1.80)
+    elif bucket == 3:
+        crash = rnd(1.82, 2.18)
+    elif bucket == 4:
+        crash = rnd(2.20, 3.40)
+    else:
+        crash = rnd(3.40, ROCKET_MAX_PAY)
+
+    crash = max(1.0, min(float(crash), ROCKET_MAX_SHOW))
+    crash_pay = min(crash, ROCKET_MAX_PAY)
+
+    # визуал выше для ленты (редко)
+    if crash_pay >= 3.0 and random.random() < 0.22:
+        display = min(ROCKET_MAX_SHOW, crash_pay + random.uniform(0.6, 2.5))
+    else:
+        display = crash_pay
+
+    display = max(display, crash_pay)
+    crash_pay = round(crash_pay, 2)
+    display = round(display, 2)
+    return crash_pay, display
+
+
+def _rocket_mult_at(t: float) -> float:
+    """Current multiplier at t seconds after fly start."""
+    if t <= 0:
+        return 1.0
+    return round(math.exp(ROCKET_GROWTH_K * t), 2)
+
+
+def _rocket_time_to_mult(mult: float) -> float:
+    if mult <= 1.0:
+        return 0.0
+    return math.log(mult) / ROCKET_GROWTH_K
+
+
+def _rocket_public(r: dict, uid: int = 0) -> dict:
+    now = time.time()
+    status = r.get("status") or "betting"
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    fly_started = float(r.get("fly_started_at") or 0)
+    betting_ends = float(r.get("betting_ends_at") or 0)
+
+    mult = 1.0
+    if status == "flying" and fly_started > 0:
+        t = max(0.0, now - fly_started)
+        mult = _rocket_mult_at(t)
+        # don't reveal past crash to client during fly — clamp display
+        if mult >= display_crash:
+            mult = display_crash
+    elif status == "crashed":
+        mult = display_crash
+
+    players = []
+    my_bet = None
+    for pid, p in (r.get("bets") or {}).items():
+        if not isinstance(p, dict):
+            continue
+        row = {
+            "uid": int(pid) if str(pid).isdigit() else pid,
+            "username": p.get("username") or ("ID " + str(pid)),
+            "amount": int(p.get("amount") or 0),
+            "cashed": bool(p.get("cashed")),
+            "cashout_mult": p.get("cashout_mult"),
+        }
+        players.append(row)
+        if uid and str(pid) == str(uid):
+            my_bet = row
+    players.sort(key=lambda x: -x["amount"])
+
+    left = 0.0
+    if status == "betting":
+        left = max(0.0, betting_ends - now)
+
+    return {
+        "status": status,
+        "round_id": int(r.get("round_id") or 0),
+        "mult": mult,
+        "countdown": round(left, 2),
+        "history": (r.get("history") or [])[:24],
+        "players": players[:40],
+        "my_bet": my_bet,
+        "server_now": now,
+        "fly_started_at": fly_started,
+        "crash_at": display_crash if status == "crashed" else None,
+    }
+
+
+def _rocket_start_betting(r: dict) -> dict:
+    now = time.time()
+    r["status"] = "betting"
+    r["round_id"] = int(r.get("round_id") or 0) + 1
+    r["betting_ends_at"] = now + ROCKET_BETTING_SEC
+    r["fly_started_at"] = 0.0
+    r["bets"] = {}
+    r["_all_cashed_boost"] = False
+    # pre-roll (пересчитаем при старте полёта с учётом банка)
+    pnl = int(r.get("house_pnl") or 0)
+    crash_pay, display = _rocket_gen_crash(pnl, bank=0)
+    r["crash_at"] = crash_pay
+    r["display_crash"] = display
+    r["seed"] = db.new_id()
+    return r
+
+
+def _rocket_tick() -> None:
+    """Advance rocket round state machine. Called from background loop."""
+    try:
+        r = db.get_rocket()
+        now = time.time()
+        status = r.get("status") or "betting"
+
+        if status == "betting":
+            ends = float(r.get("betting_ends_at") or 0)
+            if ends <= 0:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+            # safety: stuck past end by >30s → force new round
+            if now - ends > 30:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+            if now >= ends:
+                r["status"] = "flying"
+                r["fly_started_at"] = now
+                bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+                bank = 0
+                for p in bets.values():
+                    if isinstance(p, dict):
+                        bank += int(p.get("amount") or 0)
+                pnl = int(r.get("house_pnl") or 0)
+                # пересчёт краша с учётом банка: большой банк → чаще ×2
+                crash_pay, display = _rocket_gen_crash(pnl, bank=bank)
+                if not bets:
+                    # пустой раунд — для визуала можно улететь далеко
+                    if random.random() < 0.55:
+                        display = round(random.uniform(3.5, ROCKET_MAX_SHOW), 2)
+                        crash_pay = min(display, ROCKET_MAX_PAY)
+                    else:
+                        display = crash_pay
+                r["crash_at"] = round(float(crash_pay), 2)
+                r["display_crash"] = round(float(display), 2)
+                r["_all_cashed_boost"] = False
+                db.save_rocket(r)
+                return
+
+        elif status == "flying":
+            fly_started = float(r.get("fly_started_at") or 0)
+            if fly_started <= 0:
+                r["fly_started_at"] = now
+                db.save_rocket(r)
+                return
+            display_crash = float(r.get("display_crash") or 1.0)
+            t = max(0.0, now - fly_started)
+            mult = _rocket_mult_at(t)
+            # все забрали — для визуала можно улететь дальше (1 раз)
+            if not r.get("_all_cashed_boost"):
+                bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+                if bets and all(isinstance(p, dict) and p.get("cashed") for p in bets.values()):
+                    r["_all_cashed_boost"] = True
+                    extra = random.uniform(1.5, 4.0)
+                    new_d = min(ROCKET_MAX_SHOW, max(display_crash, mult + extra))
+                    r["display_crash"] = round(new_d, 2)
+                    display_crash = new_d
+                    db.save_rocket(r)
+            # safety: flying > 60s → force crash
+            force = t > 60
+            if mult >= display_crash or force:
+                if force:
+                    display_crash = min(display_crash, max(1.0, mult))
+                    r["display_crash"] = round(display_crash, 2)
+                r["status"] = "crashed"
+                r["crashed_at"] = now
+                bets = r.get("bets") or {}
+                pnl_delta = 0
+                for pid, p in list(bets.items()):
+                    if not isinstance(p, dict):
+                        continue
+                    amt = int(p.get("amount") or 0)
+                    if p.get("cashed"):
+                        continue
+                    pnl_delta += amt
+                    try:
+                        db.add_history({
+                            "uid": int(pid) if str(pid).lstrip("-").isdigit() else 0,
+                            "type": "rocket_lose",
+                            "bet": amt,
+                            "mult": float(r.get("display_crash") or display_crash),
+                            "win": 0,
+                        })
+                    except Exception:
+                        pass
+                r["house_pnl"] = int(r.get("house_pnl") or 0) + pnl_delta
+                hp = int(r.get("house_pnl") or 0)
+                if hp > 5000:
+                    r["house_pnl"] = int(hp * 0.9)
+                elif hp < -8000:
+                    r["house_pnl"] = -8000
+                hist = list(r.get("history") or [])
+                hist.insert(0, float(r.get("display_crash") or display_crash))
+                r["history"] = hist[:40]
+                db.save_rocket(r)
+                return
+
+        elif status == "crashed":
+            crashed_at = float(r.get("crashed_at") or 0)
+            if crashed_at <= 0:
+                r["crashed_at"] = now
+                db.save_rocket(r)
+                return
+            if now - crashed_at >= ROCKET_CRASH_HOLD:
+                r["status"] = "pause"
+                r["pause_until"] = now + ROCKET_PAUSE_SEC
+                db.save_rocket(r)
+                return
+
+        elif status == "pause":
+            until = float(r.get("pause_until") or 0)
+            if until <= 0 or now >= until:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+        else:
+            r = _rocket_start_betting(r)
+            db.save_rocket(r)
+    except Exception:
+        log.exception("rocket_tick")
+
+
+class RocketBetIn(BaseModel):
+    amount: int
+
+
+@app.get("/api/rocket/state")
+async def rocket_state(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = 0
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    except Exception:
+        uid = 0
+    # advance state machine on every poll — no wait for background loop
+    try:
+        _rocket_tick()
+    except Exception:
+        log.exception("rocket tick on state")
+    r = db.get_rocket()
+    # lazy init
+    if not r.get("betting_ends_at") and r.get("status") == "betting":
+        r = _rocket_start_betting(r)
+        db.save_rocket(r)
+    return _rocket_public(r, uid)
+
+
+@app.post("/api/rocket/bet")
+async def rocket_bet(
+    body: RocketBetIn,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > 50000:
+        raise HTTPException(400, "макс 50000★")
+    r = db.get_rocket()
+    if (r.get("status") or "") != "betting":
+        raise HTTPException(400, "приём ставок закрыт")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    if str(uid) in bets:
+        raise HTTPException(400, "ставка уже сделана в этом раунде")
+    # charge first
+    try:
+        change_balance(uid, -amount, "rocket_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+    # re-read to reduce race with tick (betting→flying)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "betting":
+        # refund
+        try:
+            change_balance(uid, amount, "rocket_bet_refund")
+        except Exception:
+            pass
+        raise HTTPException(400, "приём ставок закрыт")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    if str(uid) in bets:
+        try:
+            change_balance(uid, amount, "rocket_bet_refund")
+        except Exception:
+            pass
+        raise HTTPException(400, "ставка уже сделана в этом раунде")
+    tu = public_user(uid)
+    un = tu.get("username") or ""
+    bets[str(uid)] = {
+        "amount": amount,
+        "cashed": False,
+        "cashout_mult": None,
+        "username": un or ("ID " + str(uid)),
+    }
+    r["bets"] = bets
+    db.save_rocket(r)
+    try:
+        db.add_history({"uid": uid, "type": "rocket_bet", "bet": amount, "win": 0})
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "balance": public_user(uid)["balance"],
+        "state": _rocket_public(r, uid),
+    }
+
+
+@app.post("/api/rocket/cashout")
+async def rocket_cashout(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "flying":
+        raise HTTPException(400, "сейчас нельзя забрать")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    p = bets.get(str(uid))
+    if not p or not isinstance(p, dict):
+        raise HTTPException(400, "нет ставки")
+    if p.get("cashed"):
+        raise HTTPException(400, "уже забрал")
+    now = time.time()
+    fly_started = float(r.get("fly_started_at") or 0)
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    t = max(0.0, now - fly_started)
+    mult = _rocket_mult_at(t)
+    if mult >= display_crash or mult >= crash_pay:
+        raise HTTPException(400, "уже краш")
+    pay_mult = min(mult, crash_pay, ROCKET_MAX_PAY)
+    amount = int(p.get("amount") or 0)
+    payout = int(amount * pay_mult)
+    if payout < 1:
+        raise HTTPException(400, "слишком рано")
+    # re-check after compute (anti double-cashout)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "flying":
+        raise HTTPException(400, "уже краш")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    p = bets.get(str(uid))
+    if not p or not isinstance(p, dict):
+        raise HTTPException(400, "нет ставки")
+    if p.get("cashed"):
+        raise HTTPException(400, "уже забрал")
+    # recompute mult on latest clock
+    now = time.time()
+    fly_started = float(r.get("fly_started_at") or 0)
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    t = max(0.0, now - fly_started)
+    mult = _rocket_mult_at(t)
+    if mult >= display_crash or mult >= crash_pay:
+        raise HTTPException(400, "уже краш")
+    pay_mult = min(mult, crash_pay, ROCKET_MAX_PAY)
+    amount = int(p.get("amount") or 0)
+    payout = int(amount * pay_mult)
+    if payout < 1:
+        raise HTTPException(400, "слишком рано")
+    # mark cashed BEFORE balance credit to reduce double-pay window
+    p["cashed"] = True
+    p["cashout_mult"] = pay_mult
+    bets[str(uid)] = p
+    r["bets"] = bets
+    r["house_pnl"] = int(r.get("house_pnl") or 0) + amount - payout
+    db.save_rocket(r)
+    try:
+        change_balance(uid, payout, "rocket_win")
+    except Exception as e:
+        # rollback flag if credit failed
+        try:
+            r2 = db.get_rocket()
+            b2 = r2.get("bets") or {}
+            if str(uid) in b2 and isinstance(b2[str(uid)], dict):
+                b2[str(uid)]["cashed"] = False
+                b2[str(uid)]["cashout_mult"] = None
+                r2["bets"] = b2
+                db.save_rocket(r2)
+        except Exception:
+            pass
+        raise HTTPException(500, "cashout failed")
+    # все забрали — иногда чуть улетит, чаще крашится рядом с последним кешаутом
+    # (не форсить всегда ×4–7 — это палит «луну после всех»)
+    try:
+        r3 = db.get_rocket()
+        b3 = r3.get("bets") if isinstance(r3.get("bets"), dict) else {}
+        still = [p for p in b3.values() if isinstance(p, dict) and not p.get("cashed")]
+        if b3 and not still:
+            cur = float(r3.get("display_crash") or pay_mult)
+            roll = random.random()
+            if roll < 0.22 and cur < 5.5:
+                # редко — красивая луна
+                r3["display_crash"] = round(min(ROCKET_MAX_SHOW, max(cur, random.uniform(3.2, 6.8))), 2)
+                db.save_rocket(r3)
+            elif roll < 0.55:
+                # чуть выше последнего кеша
+                bump = pay_mult + random.uniform(0.08, 0.85)
+                r3["display_crash"] = round(min(float(r3.get("display_crash") or bump), max(pay_mult, bump)), 2)
+                # не выше исходного display, если он уже ниже
+                orig = float(r3.get("crash_at") or pay_mult)
+                r3["display_crash"] = round(min(max(pay_mult, r3["display_crash"]), max(orig, pay_mult + 0.5)), 2)
+                db.save_rocket(r3)
+            # иначе оставляем исходный crash — выглядит честно
+    except Exception:
+        pass
+    try:
+        db.add_history({
+            "uid": uid,
+            "type": "rocket_win",
+            "bet": amount,
+            "mult": pay_mult,
+            "win": payout,
+        })
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "payout": payout,
+        "mult": pay_mult,
+        "balance": public_user(uid)["balance"],
+        "state": _rocket_public(db.get_rocket(), uid),
+    }
+
+
+# ---------- ARENA ----------
+
+def _arena_public(a: dict) -> dict:
+    players = []
+    total = 0
+    for pid, p in (a.get("players") or {}).items():
+        val = int(p.get("stars") or 0)
+        total += val
+        ud = db.get_users().get(str(pid), {}) if isinstance(db.get_users(), dict) else {}
+        if not isinstance(ud, dict):
+            ud = {}
+        players.append(
+            {
+                "uid": pid,
+                "username": p.get("username") or ud.get("username"),
+                "stars": val,
+                "gift": p.get("gift"),
+                "photo_url": ud.get("photo_url") or p.get("photo_url") or "",
+                "first_name": ud.get("first_name") or p.get("first_name") or "",
+                "color": p.get("color") or "",
+            }
+        )
+    for p in players:
+        p["pct"] = round(100.0 * p["stars"] / total, 2) if total else 0
+    spin_at = a.get("spin_at")
+    left = 0
+    if spin_at:
+        left = max(0, int(spin_at - time.time()))
+    return {
+        "status": a.get("status", "open"),
+        "total": total,
+        "players": players,
+        "spin_at": spin_at,
+        "countdown": left,
+        "need": 2,
+    }
+
+
+def _player_color(uid: str) -> str:
+    colors = ["#f97316", "#3b82f6", "#10b981", "#a855f7", "#ef4444", "#eab308", "#06b6d4", "#ec4899", "#84cc16", "#6366f1"]
+    try:
+        n = int(uid)
+    except Exception:
+        n = sum(ord(c) for c in str(uid))
+    return colors[n % len(colors)]
+
+
+async def _do_arena_roll(a: dict) -> dict:
+    players = a.get("players") or {}
+    if len(players) < 2:
+        raise HTTPException(400, "need 2+")
+    total = sum(int(p.get("stars") or 0) for p in players.values())
+    if total <= 0:
+        raise HTTPException(400, "empty bank")
+    force = a.get("force_uid")
+    if force and str(force) in players:
+        winner = str(force)
+    else:
+        r = random.uniform(0, total)
+        acc = 0
+        winner = list(players.keys())[0]
+        for pid, p in players.items():
+            acc += int(p.get("stars") or 0)
+            if r <= acc:
+                winner = pid
+                break
+    win_user = db.ensure_user(int(winner))
+    gifts_won = []
+    stars_pool = 0
+    pcts = []
+    for pid, p in players.items():
+        st = int(p.get("stars") or 0)
+        pcts.append(
+            {
+                "uid": pid,
+                "username": p.get("username"),
+                "pct": round(100.0 * st / total, 2),
+                "stars": st,
+                "color": p.get("color") or _player_color(str(pid)),
+            }
+        )
+        glist = []
+        if p.get("gift"):
+            glist.append(p["gift"])
+        for gg in p.get("gifts") or []:
+            if gg and gg not in glist:
+                glist.append(gg)
+        if glist:
+            gifts_won.extend(glist)
+            # гифты уже учтены в stars как цена; stars_pool только чистые ★ без гифтов?
+            # сейчас stars включает цену гифта — победителю звёзды + гифты
+            pure = st
+            for gg in glist:
+                pure -= int((gg or {}).get("price") or 0)
+            if pure > 0:
+                stars_pool += pure
+        else:
+            stars_pool += st
+    if stars_pool:
+        change_balance(int(winner), stars_pool, "arena_win")
+    if gifts_won:
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(winner)
+        items = inv.get(key)
+        if not isinstance(items, list):
+            items = []
+        for g in gifts_won:
+            items.append(g)
+        inv[key] = items
+        db.save_inv(inv)
+    result = {
+        "winner": winner,
+        "username": win_user.get("username"),
+        "first_name": win_user.get("first_name") or "",
+        "photo_url": win_user.get("photo_url") or players.get(str(winner), {}).get("photo_url") or "",
+        "total": total,
+        "stars_won": int(stars_pool),
+        "pcts": pcts,
+        "gifts": gifts_won,
+        "color": players.get(str(winner), {}).get("color") or _player_color(str(winner)),
+    }
+    db.add_history({"uid": int(winner), "type": "arena_win", "total": total, "result": result})
+    result["ts"] = time.time()
+    db.save_arena({
+        "status": "open",
+        "players": {},
+        "force_uid": None,
+        "started_at": None,
+        "spin_at": None,
+        "last_result": result,
+        "last_result_until": time.time() + 18,
+    })
+    return result
+
+
+@app.get("/api/arena")
+async def arena_state(x_telegram_id: Optional[str] = Header(None)):
+    require_uid(x_telegram_id)
+    a = db.get_arena()
+    players = a.get("players") or {}
+    # авто-ролл по таймеру
+    if len(players) >= 2 and a.get("spin_at") and time.time() >= float(a["spin_at"]):
+        try:
+            result = await _do_arena_roll(a)
+            a = db.get_arena()
+        except Exception as e:
+            log.warning("auto roll: %s", e)
+            a = db.get_arena()
+    out = _arena_public(a)
+    # держим last_result ~18 сек чтобы клиент успел прокрутить анимацию
+    until = float(a.get("last_result_until") or 0)
+    lr = a.get("last_result")
+    if lr and time.time() < until:
+        out["last_result"] = lr
+    return out
+
+
+@app.post("/api/arena/join")
+async def arena_join(body: ArenaJoin, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    a = db.get_arena()
+    if a.get("status") not in (None, "open"):
+        a["status"] = "open"
+    u = db.ensure_user(uid)
+    stars = 0
+    gift = None
+    if body.gift_id:
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        items = inv.get(str(uid), [])
+        if not isinstance(items, list):
+            items = []
+        item = next((x for x in items if isinstance(x, dict) and x.get("id") == body.gift_id), None)
+        if not item:
+            raise HTTPException(400, "no gift")
+        stars = int(item.get("price") or 0)
+        if stars < MIN_BET:
+            raise HTTPException(400, f"gift min {MIN_BET}")
+        inv[str(uid)] = [x for x in items if x.get("id") != body.gift_id]
+        db.save_inv(inv)
+        gift = {"id": item["id"], "link": item.get("link"), "title": item.get("title"), "price": stars}
+    else:
+        stars = int(body.amount)
+        if stars < MIN_BET:
+            raise HTTPException(400, f"min {MIN_BET}")
+        try:
+            change_balance(uid, -stars, "arena_bet")
+        except ValueError:
+            raise HTTPException(400, "no balance")
+
+    a.setdefault("players", {})
+    if not isinstance(a["players"], dict):
+        a["players"] = {}
+    key = str(uid)
+    prev = a["players"].get(key)
+    gifts_list = []
+    if isinstance(prev, dict):
+        # докидываем ставку, не затираем
+        if prev.get("gift"):
+            gifts_list.append(prev["gift"])
+        for g in prev.get("gifts") or []:
+            if g:
+                gifts_list.append(g)
+        prev_stars = int(prev.get("stars") or 0)
+    else:
+        prev_stars = 0
+    if gift:
+        gifts_list.append(gift)
+    total_stars = prev_stars + stars
+    a["players"][key] = {
+        "username": u.get("username"),
+        "stars": total_stars,
+        "gift": gifts_list[-1] if gifts_list else None,
+        "gifts": gifts_list,
+        "photo_url": u.get("photo_url") or "",
+        "first_name": u.get("first_name") or "",
+        "color": (prev or {}).get("color") if isinstance(prev, dict) else _player_color(key),
+    }
+    if not a["players"][key]["color"]:
+        a["players"][key]["color"] = _player_color(key)
+    # таймер 10 сек когда 2+ игрока; каждый новый вход/докид сбрасывает на 15
+    if len(a["players"]) >= 2:
+        a["spin_at"] = time.time() + 10
+        a["status"] = "open"
+    else:
+        a["spin_at"] = None
+    db.save_arena(a)
+    return _arena_public(a)
+
+
+@app.post("/api/arena/roll")
+async def arena_roll(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin only")
+    a = db.get_arena()
+    result = await _do_arena_roll(a)
+    out = _arena_public(db.get_arena())
+    out["last_result"] = result
+    return out
+
+
+# ---------- INVENTORY ----------
+@app.get("/api/inventory")
+async def api_inv(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    return {"items": inv.get(str(uid), [])}
+
+
+@app.post("/api/inventory/sell")
+async def inv_sell(body: GiftSell, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    items = inv.get(str(uid), [])
+    item = next((x for x in items if x["id"] == body.gift_id), None)
+    if not item:
+        raise HTTPException(400, "no gift")
+    price = int(item["price"])
+    inv[str(uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    change_balance(uid, price, "sell_gift")
+    # notify owners
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), f"💱 @{public_user(uid)['username']} продал гифт {item.get('title')} за {price}★")
+        except Exception:
+            pass
+    return {"ok": True, "balance": public_user(uid)["balance"]}
+
+
+@app.post("/api/inventory/withdraw")
+async def inv_withdraw(body: GiftWithdraw, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    items = inv.get(str(uid), [])
+    item = next((x for x in items if x["id"] == body.gift_id), None)
+    if not item:
+        raise HTTPException(400, "no gift")
+    try:
+        change_balance(uid, -WITHDRAW_FEE, "withdraw_fee")
+    except ValueError:
+        raise HTTPException(400, f"need {WITHDRAW_FEE}★ fee")
+    inv[str(uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    w = db.get_withdraws()
+    req = {
+        "id": db.new_id(),
+        "uid": uid,
+        "username": public_user(uid)["username"],
+        "gift": item,
+        "status": "pending",
+        "ts": int(time.time()),
+    }
+    w.insert(0, req)
+    db.save_withdraws(w)
+    text = (
+        f"📤 Вывод гифта\n@{req['username']} <code>{uid}</code>\n"
+        f"{item.get('title')} | {item.get('price')}★\n{item.get('link')}\n"
+        f"Fee {WITHDRAW_FEE}★ списан"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправил", callback_data="wdone:" + str(req["id"])),
+                InlineKeyboardButton(text="❌ Отказ", callback_data="wrej:" + str(req["id"])),
+            ]
+        ]
+    )
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    for adm in db.get_settings().get("admins", []):
+        try:
+            await bot.send_message(int(adm), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    return {"ok": True, "balance": public_user(uid)["balance"]}
+
+
+
+
+@app.post("/api/withdraw/stars")
+async def withdraw_stars(body: StarsWithdraw, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    if amount < MIN_WITHDRAW:
+        raise HTTPException(400, f"мин. вывод {MIN_WITHDRAW}★")
+    try:
+        change_balance(uid, -amount, "stars_withdraw")
+    except ValueError:
+        raise HTTPException(400, "недостаточно ★")
+    gift_value = int(amount * 0.85)
+    u = public_user(uid)
+    w = db.get_withdraws()
+    req = {
+        "id": db.new_id(),
+        "uid": uid,
+        "username": u.get("username") or "",
+        "type": "stars",
+        "amount": amount,
+        "gift_value": gift_value,
+        "status": "pending",
+        "ts": int(time.time()),
+    }
+    w.insert(0, req)
+    db.save_withdraws(w)
+    text = (
+        "⭐ Вывод звёзд → гифт\n"
+        "@" + str(req["username"] or "—") + " <code>" + str(uid) + "</code>\n"
+        "Списал: <b>" + str(amount) + "★</b>\n"
+        "Гифт на ~<b>" + str(gift_value) + "★</b> (−15%)\n"
+        "Отправить в течение 10 мин"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправил", callback_data="wdone:" + str(req["id"])),
+                InlineKeyboardButton(text="❌ Отказ", callback_data="wrej:" + str(req["id"])),
+            ]
+        ]
+    )
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    for adm in db.get_settings().get("admins", []):
+        try:
+            await bot.send_message(int(adm), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    try:
+        await bot.send_message(
+            uid,
+            "✅ Заявка принята\n\n"
+            "Списано: " + str(amount) + "★\n"
+            "Гифт ≈ " + str(gift_value) + "★ (на 15% ниже)\n\n"
+            "В течение 10 минут отправим подарок на ваш аккаунт.",
+        )
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "amount": amount,
+        "gift_value": gift_value,
+        "balance": public_user(uid)["balance"],
+    }
+
+
+# ---------- CHECKS ----------
+# лок против гонок чеков (lazy — не создавать Lock до event loop)
+_checks_lock = None
+_broadcast_running = False
+
+
+def _get_checks_lock() -> asyncio.Lock:
+    global _checks_lock
+    if _checks_lock is None:
+        _checks_lock = asyncio.Lock()
+    return _checks_lock
+
+
+@app.post("/api/check/create")
+async def check_create(body: CheckCreate, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    uses = max(1, int(getattr(body, "uses", 1) or 1))
+    if uses > 50:
+        raise HTTPException(400, "макс. 50 использований на чек")
+    if amount < 1:
+        raise HTTPException(400, "Сумма чека должна быть больше 0")
+    # списываем amount * uses (каждый активация = amount ★)
+    total = amount * uses
+    try:
+        change_balance(uid, -total, "check_create")
+    except ValueError:
+        raise HTTPException(400, f"Недостаточно ★ (нужно {total}★ = {amount}×{uses})")
+    code = db.new_id()
+    async with _get_checks_lock():
+        c = db.get_checks()
+        c[code] = {
+            "from": uid,
+            "amount": amount,
+            "uses_left": uses,
+            "uses_max": uses,
+            "used": False,  # совместимость со старыми чеками
+            "used_by": [],
+        }
+        db.save_checks(c)
+    bot_user = BOT_USERNAME.lstrip("@") if "BOT_USERNAME" in dir() else "winlinebot"
+    try:
+        from config import BOT_USERNAME as _BU
+        bot_user = str(_BU or "winlinebot").lstrip("@")
+    except Exception:
+        bot_user = "winlinebot"
+    link = f"https://catup.lol/{bot_user}?start=check_{code}"
+    link_tg = f"https://t.me/{bot_user}?start=check_{code}"
+    try:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Поделиться", url=link)],
+            ]
+        )
+        await bot.send_message(
+            uid,
+            "🎫 Чек " + str(amount) + "★\n"
+            "Активаций: " + str(uses) + (" (одноразовый)" if uses == 1 else "") + "\n"
+            "Списано с баланса: " + str(amount * uses) + "★\n"
+            "Код: " + code,
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.warning("check notify: %s", e)
+
+    return {
+        "code": code,
+        "amount": amount,
+        "uses": uses,
+        "balance": public_user(uid)["balance"],
+        "link": link,
+        "link_tg": link_tg,
+    }
+
+
+def _check_can_use(row: dict, uid: int) -> tuple[bool, str]:
+    """Проверка чека. Возвращает (ok, error_msg)."""
+    if not row:
+        return False, "Чек не найден"
+    # старый формат: used=True
+    if row.get("used") and int(row.get("uses_left", 0) or 0) <= 0 and "uses_left" not in row:
+        return False, "Чек уже использован"
+    uses_left = row.get("uses_left")
+    if uses_left is None:
+        # старый одноразовый
+        if row.get("used"):
+            return False, "Чек уже использован"
+        uses_left = 1
+    if int(uses_left) <= 0:
+        return False, "Чек исчерпан (0 использований)"
+    used_by = row.get("used_by") or []
+    try:
+        used_ids = {int(x) for x in used_by}
+    except Exception:
+        used_ids = set()
+    if int(uid) in used_ids:
+        return False, "Ты уже активировал этот чек"
+    if int(row.get("from") or 0) == int(uid):
+        return False, "Нельзя активировать свой чек"
+    return True, ""
+
+
+def _check_consume(row: dict, uid: int) -> dict:
+    uses_left = row.get("uses_left")
+    if uses_left is None:
+        uses_left = 0 if row.get("used") else 1
+    uses_left = int(uses_left) - 1
+    row["uses_left"] = uses_left
+    if uses_left <= 0:
+        row["used"] = True
+    used_by = list(row.get("used_by") or [])
+    used_by.append(int(uid))
+    row["used_by"] = used_by
+    return row
+
+
+@app.post("/api/check/activate")
+async def check_activate(body: CheckActivate, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "нет кода")
+    async with _get_checks_lock():
+        c = db.get_checks()
+        row = c.get(code)
+        ok, err = _check_can_use(row, uid)
+        if not ok:
+            raise HTTPException(400, err)
+        row = _check_consume(dict(row), uid)
+        c[code] = row
+        db.save_checks(c)
+        amt = int(row["amount"])
+    change_balance(uid, amt, "check_activate")
+    return {
+        "ok": True,
+        "amount": amt,
+        "uses_left": row.get("uses_left", 0),
+        "balance": public_user(uid)["balance"],
+    }
+
+
+# ---------- DEPOSIT CONFIRM ----------
+_last_confirm: dict = {}
+_dep_pending_amount: dict = {}  # admin_id -> order_id
+
+
+@app.post("/api/deposit/confirm")
+async def dep_confirm(body: ConfirmDep, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    now = time.time()
+    if now - _last_confirm.get(uid, 0) < 30:
+        raise HTTPException(400, "подожди 30 сек")
+    _last_confirm[uid] = now
+    u = public_user(uid)
+    uname = (u.get("username") or "").lstrip("@")
+    first = u.get("first_name") or ""
+    if not uname or uname.isdigit():
+        try:
+            chat = await bot.get_chat(uid)
+            if getattr(chat, "username", None):
+                uname = str(chat.username).lstrip("@")
+            if not first and getattr(chat, "first_name", None):
+                first = str(chat.first_name)
+            users = db.get_users()
+            if str(uid) in users:
+                if uname:
+                    users[str(uid)]["username"] = uname.lower()
+                if first:
+                    users[str(uid)]["first_name"] = first
+                db.save_users(users)
+        except Exception as e:
+            log.warning("get_chat %s: %s", uid, e)
+    oid_order = db.new_id()
+    deps = db.get_deposits()
+    deps[oid_order] = {
+        "id": oid_order,
+        "uid": uid,
+        "username": uname or "",
+        "first_name": first,
+        "note": body.note or "",
+        "status": "pending",
+        "ts": int(now),
+    }
+    db.save_deposits(deps)
+
+    if uname and not str(uname).isdigit():
+        name_line = "@" + uname
+    elif first:
+        name_line = first + " (без @)"
+    else:
+        name_line = "нет username"
+    lines = [
+        "📥 Заявка на депозит #" + str(oid_order),
+        "Игрок: " + name_line,
+        "Username: @" + (uname if uname else "нет"),
+        "Имя: " + (first if first else "—"),
+        "ID: " + str(uid),
+        "Заметка: " + (body.note or "—"),
+        "Банк: " + str(BANK),
+        "",
+        "Выбери сумму или гифт:",
     ]
-  };
-  let data = null, tab = 'stock', demo = false;
-  /* подарок StaticGram/Telegram: ссылка t.me/nft/slug-N, slug-N или /nft-img/slug-N.png -> PNG + живая анимация (telegram-gifts.js) */
-  const slugOf = (it) => { const v = it.nft_slug || it.slug || it.link || it.url || it.image || ''; const m = String(v).match(/(?:nft-img\/|t\.me\/nft\/|^)([a-z][a-z0-9]{1,63}-[1-9][0-9]{0,10})(?:\.png|$)/i); return m ? m[1].toLowerCase() : null; };
-  const setPic = (img, it) => { const s = slugOf(it); if (s) { img.dataset.nftSlug = s; img.src = '/nft-img/' + s + '.png'; } else { delete img.dataset.nftSlug; img.onerror = () => { img.onerror = null; img.src = '/images/gram-px.png'; }; img.src = it.image || '/images/gram-px.png'; } };
-  /* api()/toast() из index.html внутри замыкания и отсюда не видны (раньше инвентарь всегда показывал демо) */
-  const tgInit = () => (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) || new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
-  async function callApi(path, body) {
-    let demoId = 'anon'; try { demoId = localStorage.getItem('demoId') || 'anon'; } catch (_) {}
-    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: tgInit(), demoId, ...(body || {}) }) });
-    let data = null; try { data = await res.json(); } catch (_) {}
-    if (!res.ok) { const e = new Error((data && data.error) || ('HTTP ' + res.status)); e.data = data || {}; throw e; }
-    return data;
-  }
-  const say = (text, err) => { const el = document.getElementById('toast'); if (!el) return; el.textContent = text; el.classList.toggle('err', !!err); el.hidden = false; clearTimeout(say.t); say.t = setTimeout(() => { el.hidden = true; }, err ? 4200 : 2600); };
-  const fmt = (n) => (+n).toFixed(n % 1 ? 1 : 0);
-  const balance = () => { const e = document.getElementById('balanceValue'); return e ? parseFloat(String(e.textContent).replace(',', '.')) || 0 : 0; };
+    text = chr(10).join(lines)
+    rows = [
+        [
+            InlineKeyboardButton(text="500★", callback_data=f"depok:{oid_order}:500"),
+            InlineKeyboardButton(text="1k★", callback_data=f"depok:{oid_order}:1000"),
+            InlineKeyboardButton(text="2.5k★", callback_data=f"depok:{oid_order}:2500"),
+        ],
+        [
+            InlineKeyboardButton(text="5k★", callback_data=f"depok:{oid_order}:5000"),
+            InlineKeyboardButton(text="10k★", callback_data=f"depok:{oid_order}:10000"),
+            InlineKeyboardButton(text="25k★", callback_data=f"depok:{oid_order}:25000"),
+        ],
+        [
+            InlineKeyboardButton(text="✍️ Своя ★", callback_data=f"depask:{oid_order}"),
+            InlineKeyboardButton(text="🎁 Гифт", callback_data=f"depgift:{oid_order}"),
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"depno:{oid_order}"),
+        ],
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    targets = set()
+    for oid in [OWNER_ID, OWNER2_ID, int(db.get_settings().get("owner2") or 0)]:
+        if oid:
+            targets.add(int(oid))
+    for adm in db.get_settings().get("admins") or []:
+        try:
+            targets.add(int(adm))
+        except Exception:
+            pass
+    sent = 0
+    for oid in targets:
+        try:
+            await bot.send_message(oid, text, reply_markup=kb) if kb else await bot.send_message(oid, text)
+            sent += 1
+        except Exception as e:
+            log.warning("dep notify %s: %s", oid, e)
+    if not sent:
+        log.warning("no admins got deposit notify")
+    return {"ok": True}
 
-  async function load() {
-    try { const r = await callApi('/api/relayer/gifts'); if (r && r.stock) { data = r; demo = false; return; } } catch (_) {}
-    /* внутри Telegram показываем пустой склад, а не выдуманные демо-подарки; демо только в обычном браузере */
-    if (tgInit()) { data = { relayer: {}, stock: [], mine: [] }; demo = false; return; }
-    data = DEMO; demo = true;
-  }
 
-  /* ---------- разметка ---------- */
-  const view = document.createElement('section');
-  view.className = 'view'; view.id = 'view-inventory'; view.hidden = true;
-  view.innerHTML = `
-    <button class="view-back" id="invBack" type="button" aria-label="Назад"><svg viewBox="0 0 16 16" shape-rendering="crispEdges"><path fill="currentColor" d="M9 2h3v2h-2v2H8V4h1zM6 6h2v2H6zM4 8h2v2H4zM6 10h2v2H6zM8 12h2v2H8zM10 12h2v2h-2z" opacity="0"/><path d="M10 2L4 8L10 14" fill="none" stroke="currentColor" stroke-width="3"/></svg></button>
-    <h1 class="title">ИНВЕНТАРЬ</h1>
-    <div class="inv-relayer"><div class="av">🎁</div><div class="tx"><b id="invRelName">@relayer</b><small id="invRelSub">подарки на складе</small></div><span class="live">LIVE</span></div>
-    <div class="inv-tabs"><button class="inv-tab on" data-t="stock" type="button">СКЛАД <b id="invCntStock">0</b></button><button class="inv-tab" data-t="mine" type="button">МОИ <b id="invCntMine">0</b></button></div>
-    <div class="inv-grid" id="invGrid"></div>
-    <p class="inv-foot">Подарки лежат в профиле релеера.<br>Выиграл в апгрейде — подарок уходит тебе.</p>`;
-  const modal = document.createElement('div');
-  modal.className = 'modal'; modal.id = 'invModal'; modal.hidden = true;
-  modal.innerHTML = `<div class="modal-card inv-modal"><h2 id="invMName">—</h2><div class="big"><img id="invMImg" alt=""></div>
-    <div class="meta"><span id="invMPrice">—</span><span id="invMCnt">—</span></div>
-    <button class="cta" id="invMAction" type="button"></button><button class="ghost" id="invMClose" type="button">Закрыть</button></div>`;
-
-  function render() {
-    if (!data) return;
-    $('#invRelName', view).textContent = '@' + (data.relayer?.username || 'relayer');
-    const total = data.stock.reduce((s, g) => s + (g.count || 1), 0);
-    $('#invRelSub', view).textContent = `на складе ${total} шт · обновлено только что`;
-    $('#invCntStock', view).textContent = total; $('#invCntMine', view).textContent = data.mine.length;
-    const list = tab === 'stock' ? data.stock : data.mine, g = $('#invGrid', view); g.textContent = '';
-    if (!list.length) { g.innerHTML = `<p class="inv-empty">${tab === 'mine' ? 'У тебя пока нет подарков.<br>Выиграй первый в апгрейде!' : 'Склад пуст'}</p>`; return; }
-    for (const it of list) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'inv-card' + (tab === 'mine' ? ' mine' : '');
-      b.innerHTML = `${it.count > 1 ? `<span class="cnt">x${it.count}</span>` : ''}<span class="im"><img alt="" loading="lazy"></span><span class="nm"></span><span class="pr"></span>`;
-      setPic($('img', b), it); $('.nm', b).textContent = it.name; $('.pr', b).textContent = fmt(it.price) + ' ★';
-      b.onclick = () => openItem(it); g.appendChild(b);
+# ---------- ADMIN API ----------
+@app.get("/api/admin/state")
+async def admin_state(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    s = db.get_settings()
+    return {
+        "settings": s,
+        "is_owner": db.is_owner(uid),
+        "withdraws": [w for w in db.get_withdraws() if w.get("status") == "pending"][:20],
     }
-  }
-  function openItem(it) {
-    $('#invMName').textContent = it.name; setPic($('#invMImg'), it);
-    $('#invMPrice').textContent = fmt(it.price) + ' ★'; $('#invMCnt').textContent = tab === 'stock' ? `на складе: ${it.count || 1}` : 'в твоём профиле';
-    const a = $('#invMAction'); a.textContent = tab === 'stock' ? 'ВЫБРАТЬ В АПГРЕЙД' : 'ЗАБРАТЬ В ПРОФИЛЬ';
-    a.onclick = async () => { modal.hidden = true; if (tab === 'stock') { $('#tabMenu') && document.querySelector('.tab[data-view="upgrade"]').click(); } else { try { const r = await callApi('/api/inventory/claim', { id: it.id }); say((r && r.message) || 'Подарок в очереди на отправку'); load().then(render); } catch (e) { say((e && e.data && e.data.message) || (e && e.message) || 'Не удалось забрать подарок', true); } } };
-    modal.hidden = false;
-  }
 
-  /* ---------- навигация (в обход whitelist showView) ---------- */
-  function open() {
-    document.querySelectorAll('.view').forEach((v) => { if (v !== view) v.hidden = true; });
-    view.hidden = false; document.body.dataset.view = 'inventory';
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === 'menu'));
-    const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
-    load().then(render);
-  }
-  function hideOnOtherView() { if (!view.hidden && [...document.querySelectorAll('.view')].some((v) => v !== view && !v.hidden)) view.hidden = true; }
 
-  /* ---------- GRAM -> ★ в видимом тексте ---------- */
-  function ensureStarCss() {
-    if (document.getElementById('starIcoCss')) return;
-    const st = document.createElement('style'); st.id = 'starIcoCss';
-    st.textContent = '.star-ico{display:inline-block;width:1em;height:1em;vertical-align:-.14em;background:url(/images/star-px.png) center/contain no-repeat;image-rendering:pixelated}';
-    document.head.appendChild(st);
-  }
-  function toStar(root) {
-    ensureStarCss();
-    const SKIP = 'script,style,textarea,input,option,title,.star-ico';
-    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), hits = [];
-    for (let n; (n = w.nextNode());) {
-      const p = n.parentElement; if (!p || p.closest(SKIP)) continue;
-      if (/\bGRAM\b/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/\bGRAM\b/g, '★');
-      if (n.nodeValue.indexOf('★') > -1) hits.push(n);
+@app.post("/api/admin/give")
+async def admin_give(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    db.ensure_user(target)
+    change_balance(target, int(body.amount), f"admin_give by {admin}")
+    u = db.get_users()
+    if body.amount > 0:
+        u[str(target)]["deposited"] = int(u[str(target)].get("deposited") or 0) + int(body.amount)
+        db.save_users(u)
+    try:
+        await bot.send_message(target, f"💰 Баланс изменён на {body.amount:+d}★")
+    except Exception:
+        pass
+    return {"ok": True, "uid": target, "balance": public_user(target)["balance"]}
+
+
+@app.post("/api/admin/gift")
+async def admin_gift(body: AdminGift, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    db.ensure_user(body.uid)
+    inv = db.get_inv()
+    item = {
+        "id": db.new_id(),
+        "link": body.link,
+        "price": int(body.price),
+        "title": body.title or "Gift",
     }
-    for (const n of hits) {
-      const f = document.createDocumentFragment();
-      n.nodeValue.split('★').forEach((t, i) => {
-        if (i) { const e = document.createElement('i'); e.className = 'star-ico'; e.setAttribute('role', 'img'); e.setAttribute('aria-label', '★'); f.appendChild(e); }
-        if (t) f.appendChild(document.createTextNode(t));
-      });
-      n.parentNode.replaceChild(f, n);
-    }
-  }
+    inv.setdefault(str(body.uid), []).append(item)
+    db.save_inv(inv)
+    try:
+        await bot.send_message(
+            body.uid,
+            f"🎁 Гифт в инвентарь: {item['title']} (~{item['price']}★)\n{item['link']}",
+        )
+    except Exception:
+        pass
+    return {"ok": True, "item": item}
 
-  function init() {
-    const content = $('#view-profile')?.parentElement; if (!content) return setTimeout(init, 200);
-    content.appendChild(view); document.body.appendChild(modal);
-    $('#invBack').onclick = () => $('#tabMenu').click();
-    $('#invMClose').onclick = () => { modal.hidden = true; };
-    view.querySelectorAll('.inv-tab').forEach((b) => b.onclick = () => { tab = b.dataset.t; view.querySelectorAll('.inv-tab').forEach((x) => x.classList.toggle('on', x === b)); render(); });
-    /* 4-я карточка в меню */
-    const grid = $('#view-menu .menu-grid');
-    if (grid && !$('#menuInventory')) {
-      const c = document.createElement('button'); c.className = 'menu-card menu-wide'; c.id = 'menuInventory'; c.type = 'button';
-      c.innerHTML = `<span class="mc-medal"><svg class="mc-art mc-svg" viewBox="0 0 16 16" aria-hidden="true" shape-rendering="crispEdges"><path fill="#f0892a" stroke="#250f05" stroke-width="1" paint-order="stroke" d="M1.5 5.5H14.5V14.5H1.5ZM1.5 3.5H14.5V5.5H1.5ZM7 3.5V14.5H9V3.5ZM4.5 1.5H7.5V3.5H4.5ZM8.5 1.5H11.5V3.5H8.5Z" fill-rule="evenodd"/></svg></span><span class="mc-text"><b class="mc-title">ИНВЕНТАРЬ</b><small class="mc-sub">Подарки релеера</small></span>`;
-      c.onclick = open; grid.appendChild(c);
-    }
-    const mo = new MutationObserver(() => { hideOnOtherView(); });
-    document.querySelectorAll('.view').forEach((v) => { if (v !== view) mo.observe(v, { attributes: true, attributeFilter: ['hidden'] }); });
-    new MutationObserver((m) => m.forEach((r) => r.addedNodes.forEach((n) => n.nodeType === 1 && toStar(n)))).observe(document.body, { childList: true, subtree: true });
-    new MutationObserver((m) => m.forEach((r) => r.type === 'characterData' && toStar(r.target.parentNode || document.body))).observe(document.body, { characterData: true, subtree: true });
-    toStar(document.body); load().then(render);
-    setInterval(() => { toStar(document.body); }, 1500);
-    window.RelayerInventory = { demo: DEMO, open, reload: () => load().then(render) };
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
-})();
-}catch(e){console.error("[app.js] inventory.js",e)}
-;
 
-/* ===== economy.js ===== */
-try{
-/* Экономика WinLine:
-   • монетки (1 монета = 1 ★) — слева в шапке, это основной баланс;
-   • алмазы 💎 — справа в шапке, награда, обмен на монетки в «Наградах»;
-   • вывод ЗВЁЗД из профиля: ровно 25 ★ за раз.
-   API (ваш сервер):
-     GET  /api/rewards          -> { gems, tasks:[{id,title,desc,reward,progress,goal,claimed}], exchange:[{gems,coins}] }
-     POST /api/rewards/claim    {id}
-     POST /api/rewards/exchange {gems}
-     POST /api/withdraw         {stars:25}
-   Нет ответа сервера — демо-данные. */
-(() => {
-  'use strict';
-  const $ = (s, r = document) => r.querySelector(s);
-  const fmt = (n) => (+n % 1 ? (+n).toFixed(2) : String(+n));
-  const WITHDRAW_STEP = 25;
-  const GEM = 'images/gram-px.png', COIN = 'images/star-px.png';
-  const DEMO = {
-    gems: 12,
-    tasks: [
-      { id: 'daily', title: 'Ежедневный вход', desc: 'Заходи каждый день. 7 дней подряд — бонус', reward: 1, progress: 1, goal: 1, claimed: false },
-      { id: 'streak3', title: 'Серия апгрейдов', desc: 'Выиграй 3 апгрейда подряд', reward: 1, progress: 2, goal: 3, claimed: false },
-      { id: 'mines10', title: 'Кладбище', desc: 'Открой 10 гробов в «Минах»', reward: 1, progress: 10, goal: 10, claimed: false },
-      { id: 'turn500', title: 'Оборот 500 монет', desc: 'Крути апгрейд и мины', reward: 2, progress: 140, goal: 500, claimed: false },
-      { id: 'friend', title: 'Позови друга', desc: 'Друг зашёл по твоей ссылке', reward: 3, progress: 0, goal: 1, claimed: false }
-    ],
-    exchange: [{ gems: 10, coins: 200 }, { gems: 25, coins: 550 }, { gems: 50, coins: 1200 }, { gems: 100, coins: 2600 }]
-  };
-  let data = null, demo = false;
-  const coins = () => { const e = document.getElementById('balanceValue'); return e ? parseFloat(String(e.textContent).replace(',', '.')) || 0 : 0; };
+@app.post("/api/admin/take_gift")
+async def admin_take_gift(body: AdminTakeGift, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    inv = db.get_inv()
+    items = inv.get(str(body.uid), [])
+    inv[str(body.uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    return {"ok": True}
 
-  async function load() {
-    try { const r = await (typeof api === 'function' ? api('/api/rewards') : Promise.reject()); if (r && r.tasks) { data = r; demo = false; return; } } catch (_) {}
-    if (!data) data = JSON.parse(JSON.stringify(DEMO));
-    demo = true;
-  }
-  const call = async (path, body) => { if (demo) return null; try { return await api(path, body); } catch (_) { return null; } };
 
-  /* ---------- шапка: монетки слева, алмазы справа ---------- */
-  function header() {
-    const cc = $('#coinChip'), bc = $('#balanceChip');
-    if (!cc || !bc) return;
-    if (!$('#coinMine')) {
-      const a = document.createElement('span'); a.id = 'coinMine'; $('#coinValue').after(a);
-      const g = document.createElement('span'); g.id = 'gemMine'; $('#balanceValue').after(g);
-      cc.title = 'Монеты: 1 монета = 1 ★ — нажми, чтобы пополнить'; bc.title = 'Алмазы — награды';
-      const plus = bc.querySelector('.bal-plus'); if (plus) cc.appendChild(plus);
-      document.documentElement.setAttribute('data-econ', '1');
-    }
-    const ci = cc.querySelector('img'), gi = bc.querySelector('img');
-    if (ci && !ci.src.includes('star-px')) ci.src = '/' + COIN;
-    if (gi && !gi.src.includes('gram-px')) gi.src = '/' + GEM;
-    $('#coinMine').textContent = coins().toFixed(2);
-    if (data) $('#gemMine').textContent = String(data.gems);
-  }
-  document.addEventListener('click', (e) => {
-    const t = e.target.closest && e.target.closest('#coinChip,#balanceChip'); if (!t) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    if (t.id === 'balanceChip') openRewards();
-    else if (typeof window.openDeposit === 'function') window.openDeposit();
-    else { const p = document.querySelector('.tab[data-view="profile"]'); p && p.click(); }
-  }, true);
+@app.post("/api/admin/odds")
+async def admin_odds(body: AdminOdds, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_owner(uid):
+        raise HTTPException(403, "owner")
+    s = db.get_settings()
+    if body.slot_777 is not None:
+        s["slot_777"] = float(body.slot_777)
+    if body.slot_triple is not None:
+        s["slot_triple"] = float(body.slot_triple)
+    db.save_settings(s)
+    return {"ok": True, "settings": s}
 
-  /* ---------- экран «Награды» ---------- */
-  const view = document.createElement('section');
-  view.className = 'view'; view.id = 'view-rewards'; view.hidden = true;
-  view.innerHTML = `
-    <button class="view-back" id="rwBack" type="button" aria-label="Назад"><svg viewBox="0 0 16 16" shape-rendering="crispEdges"><path d="M10 2L4 8L10 14" fill="none" stroke="currentColor" stroke-width="3"/></svg></button>
-    <h1 class="title">НАГРАДЫ</h1>
-    <div class="rw-gems"><img src="${GEM}" alt=""><div><small>ТВОИ АЛМАЗЫ</small><b id="rwGems">0</b></div></div>
-    <h2 class="rw-h">ОБМЕН АЛМАЗОВ</h2>
-    <div class="rw-ex" id="rwEx"></div>
-    <h2 class="rw-h">КАК ПОЛУЧИТЬ АЛМАЗЫ</h2>
-    <div class="rw-tasks" id="rwTasks"></div>
-    <p class="inv-foot">1 монета = 1 ★. Монетки можно вывести звёздами от 25 ★ за раз.</p>`;
 
-  function renderRewards() {
-    if (!data) return;
-    $('#rwGems', view).textContent = data.gems;
-    const ex = $('#rwEx', view); ex.textContent = '';
-    for (const t of data.exchange) {
-      const ok = data.gems >= t.gems, row = document.createElement('div'); row.className = 'rw-row';
-      row.innerHTML = `<span class="l"><img src="${GEM}" alt=""><b>${t.gems}</b></span><span class="ar">→</span><span class="r"><img src="${COIN}" alt=""><b>${t.coins}</b></span><button type="button" class="rw-btn" ${ok ? '' : 'disabled'}>ОБМЕН</button>`;
-      $('button', row).onclick = async () => {
-        if (!ok) return;
-        if (demo) { data.gems -= t.gems; const e = document.getElementById('balanceValue'); if (e) e.textContent = String(coins() + t.coins); }
-        else { await call('/api/rewards/exchange', { gems: t.gems }); await load(); }
-        header(); renderRewards();
-      };
-      ex.appendChild(row);
-    }
-    const tl = $('#rwTasks', view); tl.textContent = '';
-    for (const k of data.tasks) {
-      const done = k.progress >= k.goal, pct = Math.min(100, k.progress / k.goal * 100), card = document.createElement('div');
-      card.className = 'rw-task' + (k.claimed ? ' claimed' : done ? ' ready' : '');
-      card.innerHTML = `<div class="top"><b>${k.title}</b><span class="rw-chip">+${k.reward} <img src="${GEM}" alt=""></span></div><small>${k.desc}</small><div class="rw-bar"><i style="width:${pct}%"></i></div><div class="bot"><span>${Math.min(k.progress, k.goal)}/${k.goal}</span><button type="button" class="rw-btn" ${done && !k.claimed ? '' : 'disabled'}>${k.claimed ? 'ПОЛУЧЕНО' : 'ЗАБРАТЬ'}</button></div>`;
-      $('button', card).onclick = async () => {
-        if (!done || k.claimed) return;
-        if (demo) { k.claimed = true; data.gems += k.reward; } else { await call('/api/rewards/claim', { id: k.id }); await load(); }
-        header(); renderRewards();
-      };
-      tl.appendChild(card);
-    }
-  }
-  function openRewards() {
-    document.querySelectorAll('.view').forEach((v) => { if (v !== view) v.hidden = true; });
-    view.hidden = false; document.body.dataset.view = 'rewards';
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === 'menu'));
-    const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
-    load().then(() => { header(); renderRewards(); });
-  }
-  const hideOnOtherView = () => { if (!view.hidden && [...document.querySelectorAll('.view')].some((v) => v !== view && !v.hidden)) view.hidden = true; };
+@app.post("/api/admin/force")
+async def admin_force(body: AdminForce, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner")
+    a = db.get_arena()
+    if body.user or body.uid:
+        a["force_uid"] = resolve_target(body)
+    else:
+        a["force_uid"] = None
+    db.save_arena(a)
+    return {"ok": True, "force_uid": a.get("force_uid")}
 
-  /* ---------- вывод ЗВЁЗД в профиле ---------- */
-  function wdCard() {
-    const anchor = $('#view-profile .pstats'); if (!anchor) return;
-    const L = (data && data.withdraw) || { min: WITHDRAW_STEP, max: 75000, daily: 75000 };
-    const bal = coins(), key = bal + '|' + L.min + '|' + L.max;
-    const old = $('#wdCard'); if (old && old.dataset.k === key) return; if (old) old.remove();
-    const card = document.createElement('div');
-    card.className = 'wd-card'; card.id = 'wdCard'; card.dataset.k = key;
-    const cap = Math.max(0, Math.floor(Math.min(bal, L.max)));
-    card.innerHTML = `<h3>ВЫВОД ЗВЁЗД</h3>
-      <div class="wd-bal"><img src="${COIN}" alt=""><b>${fmt(bal)}</b><span>★</span><em>1 монета = 1 ★, без комиссии</em></div>
-      <div class="wd-amt"><input id="wdAmt" type="number" inputmode="numeric" min="${L.min}" max="${L.max}" step="1" value="${Math.min(Math.max(L.min, cap), L.max)}" aria-label="Сумма вывода"><button type="button" id="wdMax">МАКС</button></div>
-      <p id="wdHint"></p>
-      <button class="wd-btn" type="button" disabled>ВЫВЕСТИ</button>
-      <div class="wd-mini"><button type="button" id="wdInv">🎁 ИНВЕНТАРЬ</button><button type="button" id="wdRw">💎 НАГРАДЫ</button></div>`;
-    const inp = $('#wdAmt', card), btn = $('.wd-btn', card), hint = $('#wdHint', card);
-    const amount = () => Math.floor(Number(inp.value) || 0);
-    const sync = () => {
-      const a = amount();
-      let msg = '', ok = false;
-      if (bal < L.min) msg = `Нужно ещё ${fmt(L.min - bal)} ★ до вывода (минимум ${fmt(L.min)} ★ за раз).`;
-      else if (a < L.min) msg = `Минимум за один вывод — ${fmt(L.min)} ★.`;
-      else if (a > L.max) msg = `Максимум за один вывод — ${fmt(L.max)} ★.`;
-      else if (a > bal) msg = 'У тебя столько нет.';
-      else { ok = true; msg = `Спишется ${fmt(a)} монет. Лимит в сутки — ${fmt(L.daily)} ★.`; }
-      hint.textContent = msg; btn.disabled = !ok; btn.textContent = ok ? `ВЫВЕСТИ ${fmt(a)} ★` : 'ВЫВЕСТИ';
-    };
-    inp.addEventListener('input', sync); $('#wdMax', card).onclick = () => { inp.value = cap; sync(); };
-    btn.onclick = async () => {
-      const a = amount(); btn.disabled = true;
-      try {
-        await api('/api/withdraw', { stars: a });
-        if (window.toast) window.toast('Заявка на вывод ' + fmt(a) + ' ★ отправлена');
-      } catch (e) {
-        const known = { insufficient_funds: 'Недостаточно монет' };
-        if (window.toast) window.toast(known[e && e.code] || (e && e.data && e.data.message) || (e && e.message) || 'Не удалось вывести', true, 5000);
-      }
-      if (window.refreshState) window.refreshState();
-      load().then(() => { header(); wdCard(); });
-    };
-    $('#wdInv', card).onclick = () => window.RelayerInventory && window.RelayerInventory.open();
-    $('#wdRw', card).onclick = openRewards;
-    sync();
-    anchor.after(card);
-  }
 
-  function init() {
-    const content = $('#view-profile')?.parentElement; if (!content || !$('#coinChip')) return setTimeout(init, 200);
-    content.appendChild(view);
-    $('#rwBack').onclick = () => $('#tabMenu').click();
-    const grid = $('#view-menu .menu-grid');
-    if (grid && !$('#menuRewards')) {
-      const c = document.createElement('button'); c.className = 'menu-card menu-wide'; c.id = 'menuRewards'; c.type = 'button';
-      c.innerHTML = `<span class="mc-medal"><svg class="mc-art mc-svg" viewBox="0 0 16 16" aria-hidden="true" shape-rendering="crispEdges"><path fill="#f0892a" stroke="#250f05" stroke-width="1" paint-order="stroke" d="M4.5 1.5H11.5L14.5 5.5L8 14.5L1.5 5.5ZM4.5 5.5L8 11.5L11.5 5.5Z" fill-rule="evenodd"/></svg></span><span class="mc-text"><b class="mc-title">НАГРАДЫ</b><small class="mc-sub">Алмазы и обмен</small></span>`;
-      c.onclick = openRewards; grid.appendChild(c);
-    }
-    const mo = new MutationObserver(hideOnOtherView);
-    document.querySelectorAll('.view').forEach((v) => { if (v !== view) mo.observe(v, { attributes: true, attributeFilter: ['hidden'] }); });
-    header(); wdCard(); load().then(() => { header(); renderRewards(); });
-    setInterval(() => { header(); wdCard(); }, 700);
-    window.Economy = { openRewards, reload: () => load().then(() => { header(); renderRewards(); }), demo: DEMO };
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
-})();
-}catch(e){console.error("[app.js] economy.js",e)}
-;
+@app.post("/api/admin/owner2")
+async def admin_owner2(body: AdminOwner2, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner")
+    target = resolve_target(body)
+    st = db.get_settings()
+    st["owner2"] = int(target)
+    db.save_settings(st)
+    return {"ok": True, "owner2": target}
 
-/* ===== maintenance-gate.js ===== */
-try{
-(async function () {
-  try {
-    const init = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) || "";
-    const r = await fetch("/api/maintenance", { cache: "no-store", headers: { "X-Init-Data": init } });
-    const j = await r.json();
-    if (!j.maintenance || !j.blocked) return;
-    const el = document.getElementById("mtScreen"); if (!el) return;
-    const t = document.getElementById("mtText");
-    if (t) t.textContent = j.text || "Сервис на технических работах. Скоро вернёмся.";
-    el.hidden = false;
-    const retry = document.getElementById("mtRetry"); if (retry) retry.onclick = () => location.reload();
-    setTimeout(() => location.reload(), 30000);
-  } catch (_) {}
-})();
-}catch(e){console.error("[app.js] maintenance-gate.js",e)}
-;
+
+# ---------- BOT COMMANDS ----------
+
+def _channel_username() -> str:
+    ch = (REQUIRED_CHANNEL or "").strip()
+    if not ch:
+        return ""
+    return ch if ch.startswith("@") else ("@" + ch.lstrip("@"))
+
+
+def _user_channel_ok(uid: int) -> bool:
+    try:
+        u = db.get_users().get(str(uid), {}) or {}
+        return bool(u.get("channel_ok"))
+    except Exception:
+        return False
+
+
+def _set_channel_ok(uid: int) -> None:
+    try:
+        users = db.get_users()
+        k = str(uid)
+        if k not in users or not isinstance(users.get(k), dict):
+            db.ensure_user(uid)
+            users = db.get_users()
+        users[k]["channel_ok"] = True
+        db.save_users(users)
+    except Exception as e:
+        log.warning("set channel_ok: %s", e)
+
+
+async def _is_subscribed(uid: int) -> bool:
+    """Только визуал: нажал «Я подписался» → флаг. Без API, без пересылки."""
+    ch = _channel_username()
+    if not ch:
+        return True
+    if db.is_moderator(uid):
+        return True
+    return _user_channel_ok(uid)
+
+
+def _welcome_kb():
+    url = (WEBAPP_URL or os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+    if url and not url.startswith("http"):
+        url = "https://" + url
+    if not url:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть Winline", web_app=WebAppInfo(url=url))],
+            [InlineKeyboardButton(text="Банк", url="https://catup.lol/winlinebank")],
+        ]
+    )
+
+
+def _sub_keyboard():
+    ch = _channel_username()
+    rows = []
+    if ch:
+        rows.append(
+            [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://catup.lol/" + ch.lstrip("@"))]
+        )
+    rows.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="checksub")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_welcome(message: Message, name: str = ""):
+    kb = _welcome_kb()
+    text = (
+        "Привет" + (", " + name if name else "") + "!\n\n"
+        "Winline — слоты, мины, PVP-арена.\n"
+        "Банк: " + str(BANK) + "\n\n"
+        "1. Открой приложение кнопкой\n"
+        "2. Пополни через банк\n"
+        "3. В аппке нажми Подтвердить — админ зачислит\n\n"
+        "Удачи!"
+    )
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "checksub")
+async def cb_checksub(callback: CallbackQuery):
+    """Визуал: ставим флаг и пускаем. Никакой API."""
+    uid = callback.from_user.id
+    _set_channel_ok(uid)
+    await callback.answer("Ок ✅")
+    name = callback.from_user.first_name or ""
+    try:
+        await _send_welcome(callback.message, name)
+    except Exception:
+        await callback.message.answer("Готово!", reply_markup=_welcome_kb())
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    try:
+        uid = message.from_user.id
+        uname = (message.from_user.username or "") or ""
+        db.ensure_user(uid, uname)
+        try:
+            users = db.get_users()
+            k = str(uid)
+            if k in users:
+                if message.from_user.first_name:
+                    users[k]["first_name"] = message.from_user.first_name
+                if uname:
+                    users[k]["username"] = uname.lower()
+                db.save_users(users)
+        except Exception as e:
+            log.warning("start save user: %s", e)
+
+        # активация чека: /start check_CODE
+        payload = ""
+        try:
+            parts = (message.text or "").split(maxsplit=1)
+            if len(parts) > 1:
+                payload = parts[1].strip()
+        except Exception:
+            pass
+        if payload.startswith("check_"):
+            code = payload[6:].strip()
+            async with _get_checks_lock():
+                checks = db.get_checks()
+                row = checks.get(code)
+                ok, err = _check_can_use(row, uid)
+                if not ok:
+                    await message.answer(err)
+                    return
+                row = _check_consume(dict(row), uid)
+                checks[code] = row
+                db.save_checks(checks)
+                amt = int(row["amount"])
+                left = int(row.get("uses_left") or 0)
+                from_uid = int(row.get("from") or 0)
+            bal = change_balance(uid, amt, "check_activate")
+            extra = f"\nОсталось использований: {left}" if left > 0 else ""
+            await message.answer(
+                "✅ Чек активирован: +" + str(amt) + "★\nБаланс: " + str(bal) + "★" + extra
+            )
+            if from_uid:
+                try:
+                    await bot.send_message(
+                        from_uid,
+                        "Твой чек " + code + " активирован (" + str(amt) + "★), осталось " + str(left),
+                    )
+                except Exception:
+                    pass
+            return
+
+        # визуальная «подписка» (без API): один раз кнопка → флаг channel_ok
+        if not await _is_subscribed(uid):
+            ch = _channel_username() or "@winline"
+            await message.answer(
+                "Подпишись на канал " + ch + " и нажми «Я подписался»",
+                reply_markup=_sub_keyboard(),
+            )
+            return
+
+        name = message.from_user.first_name or (uname and ("@" + uname)) or "игрок"
+        await _send_welcome(message, str(name))
+    except Exception as e:
+        log.exception("start failed")
+        try:
+            await message.answer("Winline онлайн. Ошибка старта: " + str(e)[:120])
+        except Exception:
+            pass
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "Админ-команды:\n"
+        "/give ID 5000 — выдать любую сумму ★\n"
+        "/take ID 100 — снять ★\n"
+        "/gift ID 1500 https://... — гифт в инвентарь\n"
+        "/force ID — гарант арены (0=сброс)\n"
+        "/odds777 0.005\n"
+        "/owner2 ID\n"
+        "/addadmin ID\n"
+        "/addmod ID|@user — добавить модератора\n"
+        "/delmod ID|@user — убрать модератора\n"
+        "/mods — список модеров\n"
+        "/broadcast текст — рассылка (мод+админ)\n\n"
+        "Модеры: /mod · /mgive · /mtake · /mcheck\n"
+        "Депозит: кнопки в заявке (★ или гифт)\n"
+        "Вывод гифтов: кнопки в ЛС"
+    )
+
+
+@router.message(Command("mod"))
+async def cmd_mod(message: Message):
+    """Отдельная панель модератора."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    is_full = db.is_admin(message.from_user.id)
+    lines = [
+        "🛡 Панель модератора",
+        "",
+        f"/mgive @user 1500 — выдать ★ (макс {MOD_GIVE_MAX})",
+        f"/mtake @user 500 — снять ★ (макс {MOD_GIVE_MAX})",
+        "/mcheck 5000 3 — чек 5000★ × 3 исп. (со своего баланса)",
+        "/broadcast текст — рассылка всем",
+        "",
+        "Работает и по @username, и по числовому ID",
+    ]
+    if is_full:
+        lines.append("")
+        lines.append("(ты админ — полный /admin тоже доступен)")
+    await message.answer("\n".join(lines))
+
+
+def _resolve_mod_target(ref: str):
+    """ID или @username → uid. Юзер должен хотя бы раз зайти в аппку."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    tuid = db.parse_user_ref(ref)
+    if tuid is not None:
+        return int(tuid)
+    try:
+        return int(ref.lstrip("@"))
+    except Exception:
+        return None
+
+
+@router.message(Command("mgive"))
+async def cmd_mgive(message: Message):
+    """Выдача модератором с лимитом MOD_GIVE_MAX. По ID или @username."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer(f"Формат: /mgive @user_или_ID сумма\nМакс {MOD_GIVE_MAX}★")
+        tuid = _resolve_mod_target(parts[1])
+        if tuid is None:
+            return await message.answer(
+                "Юзер не найден: " + parts[1] + "\n"
+                "Нужен числовой ID или @username (игрок должен зайти в аппку хотя бы раз)"
+            )
+        try:
+            amount = int(parts[2].replace(" ", "").replace("★", "").replace("+", ""))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 1500")
+        if amount <= 0:
+            return await message.answer("Сумма > 0")
+        if db.is_mod_only(message.from_user.id) and amount > MOD_GIVE_MAX:
+            return await message.answer(f"Лимит модератора: максимум {MOD_GIVE_MAX}★ за раз")
+        db.ensure_user(tuid)
+        bal = change_balance(tuid, amount, "mod_give by " + str(message.from_user.id))
+        # мод-выдача НЕ крутит deposited/топ
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer(
+            "✅ Мод-выдача " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+        )
+        try:
+            await bot.send_message(tuid, "✅ Тебе зачислено +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception as e:
+            log.warning("notify mgive: %s", e)
+    except Exception as e:
+        log.exception("mgive failed")
+        await message.answer("Ошибка /mgive: " + str(e)[:200])
+
+
+@router.message(Command("mtake"))
+async def cmd_mtake(message: Message):
+    """Снятие ★ модератором. Лимит MOD_GIVE_MAX. По ID или @username."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer(f"Формат: /mtake @user_или_ID сумма\nМакс {MOD_GIVE_MAX}★")
+        tuid = _resolve_mod_target(parts[1])
+        if tuid is None:
+            return await message.answer(
+                "Юзер не найден: " + parts[1] + "\n"
+                "Нужен ID или @username (игрок должен зайти в аппку)"
+            )
+        try:
+            amount = abs(int(parts[2].replace(" ", "").replace("★", "").replace("-", "")))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 500")
+        if amount <= 0:
+            return await message.answer("Сумма > 0")
+        if db.is_mod_only(message.from_user.id) and amount > MOD_GIVE_MAX:
+            return await message.answer(f"Лимит модератора: максимум {MOD_GIVE_MAX}★ за раз")
+        try:
+            bal = change_balance(tuid, -amount, "mod_take by " + str(message.from_user.id))
+        except ValueError:
+            return await message.answer("Не хватает баланса у игрока")
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer(
+            "✅ Снято " + str(amount) + "★ с @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+        )
+        try:
+            await bot.send_message(tuid, "С баланса снято " + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception("mtake failed")
+        await message.answer("Ошибка /mtake: " + str(e)[:200])
+
+
+@router.message(Command("mcheck"))
+async def cmd_mcheck(message: Message):
+    """Мод/админ: создать чек с лимитом использований. Списывает с баланса создателя."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            return await message.answer(
+                "Формат: /mcheck сумма [uses]\n"
+                "Пример: /mcheck 5000 3  — чек по 5000★, 3 активации (спишет 15000★)\n"
+                "Макс uses: 50"
+            )
+        amount = int(parts[1].replace("★", "").replace(" ", ""))
+        uses = int(parts[2]) if len(parts) >= 3 else 1
+        uses = max(1, min(50, uses))
+        if amount < 1:
+            return await message.answer("Сумма > 0")
+        uid = message.from_user.id
+        total = amount * uses
+        try:
+            change_balance(uid, -total, "mcheck_create")
+        except ValueError:
+            return await message.answer(f"Не хватает баланса (нужно {total}★)")
+        code = db.new_id()
+        async with _get_checks_lock():
+            c = db.get_checks()
+            c[code] = {
+                "from": uid,
+                "amount": amount,
+                "uses_left": uses,
+                "uses_max": uses,
+                "used": False,
+                "used_by": [],
+            }
+            db.save_checks(c)
+        bot_user = str(BOT_USERNAME or "winlinebot").lstrip("@")
+        link = f"https://catup.lol/{bot_user}?start=check_{code}"
+        await message.answer(
+            f"🎫 Чек создан\n"
+            f"Сумма за активацию: {amount}★\n"
+            f"Активаций: {uses}" + (" (одноразовый)" if uses == 1 else "") + "\n"
+            f"Списано с баланса: {total}★\n"
+            f"Код: <code>{code}</code>\n"
+            f"{link}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.exception("mcheck")
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+@router.message(Command("addmod"))
+async def cmd_addmod(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/addmod ID")
+    tid = db.parse_user_ref(parts[1])
+    if tid is None:
+        try:
+            tid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    st = db.get_settings()
+    mods = st.setdefault("moderators", [])
+    if not isinstance(mods, list):
+        mods = []
+    mods.append(int(tid))
+    st["moderators"] = list(set(int(x) for x in mods))
+    db.save_settings(st)
+    await message.answer("mod ok: " + str(tid))
+
+
+@router.message(Command("delmod"))
+async def cmd_delmod(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/delmod ID")
+    tid = db.parse_user_ref(parts[1])
+    if tid is None:
+        try:
+            tid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    st = db.get_settings()
+    mods = [int(x) for x in (st.get("moderators") or []) if int(x) != int(tid)]
+    st["moderators"] = mods
+    db.save_settings(st)
+    await message.answer("mod removed: " + str(tid))
+
+
+@router.message(Command("mods"))
+async def cmd_mods(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    mods = db.get_settings().get("moderators") or []
+    await message.answer("Модераторы: " + (", ".join(str(x) for x in mods) if mods else "пусто"))
+
+
+# состояние рассылки: admin_id -> waiting text
+_broadcast_pending: dict = {}
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message):
+    """Админ или мод. /broadcast текст — сразу, или /broadcast → следующим сообщением текст."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    global _broadcast_running
+    if _broadcast_running:
+        return await message.answer("Уже идёт рассылка, подожди")
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        _broadcast_pending[message.from_user.id] = True
+        return await message.answer(
+            "📢 Рассылка\nПришли следующим сообщением текст (можно с эмодзи).\nОтмена: /cancel"
+        )
+    await _do_broadcast(message.from_user.id, parts[1].strip(), message)
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message):
+    if message.from_user.id in _broadcast_pending:
+        _broadcast_pending.pop(message.from_user.id, None)
+        await message.answer("Отменено")
+
+
+async def _do_broadcast(admin_id: int, text: str, reply_to: Message):
+    global _broadcast_running
+    if _broadcast_running:
+        await reply_to.answer("Уже идёт рассылка")
+        return
+    if not text or not str(text).strip():
+        await reply_to.answer("Пустой текст")
+        return
+    _broadcast_running = True
+    try:
+        users = db.get_users()
+        ids = []
+        for k in users.keys():
+            try:
+                ids.append(int(k))
+            except Exception:
+                pass
+        ok = 0
+        fail = 0
+        await reply_to.answer(f"📢 Рассылка {len(ids)} юзерам...")
+        for i, uid in enumerate(ids):
+            try:
+                await bot.send_message(uid, text)
+                ok += 1
+            except Exception:
+                fail += 1
+            # пауза, чтобы не упереться в лимиты API
+            if i % 20 == 19:
+                await asyncio.sleep(0.35)
+            else:
+                await asyncio.sleep(0.04)
+        await reply_to.answer(f"✅ Рассылка готова\nДоставлено: {ok}\nОшибки: {fail}")
+    except Exception as e:
+        log.exception("broadcast")
+        try:
+            await reply_to.answer("Ошибка рассылки: " + str(e)[:120])
+        except Exception:
+            pass
+    finally:
+        _broadcast_running = False
+
+
+
+@router.message(Command("give"))
+async def cmd_give(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer("Формат: /give ID_или_@user сумма\nПример: /give 1780308643 1500")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            # try force int
+            try:
+                tuid = int(parts[1].lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден. Используй числовой ID.")
+        try:
+            amount = int(parts[2].replace(" ", "").replace("★", "").replace("+", ""))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 1500")
+        db.ensure_user(tuid)
+        bal = change_balance(tuid, amount, "give by " + str(message.from_user.id))
+        if amount > 0:
+            u = db.get_users()
+            u[str(tuid)]["deposited"] = int(u[str(tuid)].get("deposited") or 0) + amount
+            db.save_users(u)
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer("✅ Зачислено " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★")
+        try:
+            await bot.send_message(tuid, "✅ Тебе зачислено +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception as e:
+            log.warning("notify give: %s", e)
+    except Exception as e:
+        log.exception("give failed")
+        await message.answer("Ошибка /give: " + str(e)[:200])
+
+
+@router.message(Command("take"))
+async def cmd_take(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer("/take ID сумма")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(parts[1])
+            except Exception:
+                return await message.answer("Юзер не найден")
+        amount = abs(int(parts[2].replace(" ", "")))
+        bal = change_balance(tuid, -amount, "take by " + str(message.from_user.id))
+        await message.answer("✅ Снято " + str(amount) + "★ с ID " + str(tuid) + "\nБаланс: " + str(bal) + "★")
+        try:
+            await bot.send_message(tuid, "С баланса снято " + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception:
+            pass
+    except ValueError:
+        await message.answer("Не хватает баланса")
+    except Exception as e:
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+
+@router.message(Command("gift"))
+async def cmd_gift(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=3)
+        if len(parts) < 4:
+            return await message.answer(
+                "Формат:\n/gift ID цена ссылка\n"
+                "Пример:\n/gift 1780308643 1500 https://t.me/nft/..."
+            )
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден. Укажи числовой ID.")
+        try:
+            price = int(str(parts[2]).replace("★", "").replace(" ", ""))
+        except ValueError:
+            return await message.answer("Цена числом, пример: 1500")
+        link = parts[3].strip()
+        if not link:
+            return await message.answer("Нужна ссылка на гифт")
+        db.ensure_user(tuid)
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(tuid)
+        items = inv.get(key)
+        if not isinstance(items, list):
+            items = []
+        item = {"id": db.new_id(), "link": link, "price": price, "title": "Gift"}
+        items.append(item)
+        inv[key] = items
+        db.save_inv(inv)
+        await message.answer(
+            "✅ Гифт выдан\n"
+            "ID: " + str(tuid) + "\n"
+            "Цена: " + str(price) + "★\n"
+            "gift_id: " + item["id"] + "\n"
+            "Ссылка: " + link
+        )
+        try:
+            await bot.send_message(
+                tuid,
+                "🎁 Тебе выдан гифт (~" + str(price) + "★)\n" + link,
+            )
+        except Exception as e:
+            log.warning("gift notify: %s", e)
+    except Exception as e:
+        log.exception("gift")
+        await message.answer("Ошибка /gift: " + str(e)[:200])
+
+
+@router.message(Command("takegift"))
+async def cmd_takegift(message: Message):
+    """Забрать гифт: /takegift ID gift_id  ИЛИ  /takegift ID all"""
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 3:
+            return await message.answer(
+                "Забрать гифт:\n"
+                "/takegift ID gift_id\n"
+                "/takegift ID all — все гифты\n"
+                "Список: /gifts ID"
+            )
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден")
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(tuid)
+        items = inv.get(key)
+        if not isinstance(items, list) or not items:
+            return await message.answer("У игрока нет гифтов")
+        target = parts[2].strip().lower()
+        if target == "all":
+            n = len(items)
+            inv[key] = []
+            db.save_inv(inv)
+            await message.answer("✅ Снято гифтов: " + str(n) + " у ID " + str(tuid))
+            try:
+                await bot.send_message(tuid, "Админ забрал все гифты из инвентаря (" + str(n) + ")")
+            except Exception:
+                pass
+            return
+        new_items = [x for x in items if str(x.get("id")) != target]
+        if len(new_items) == len(items):
+            return await message.answer("gift_id не найден. Смотри /gifts " + str(tuid))
+        inv[key] = new_items
+        db.save_inv(inv)
+        await message.answer("✅ Гифт " + target + " забран у ID " + str(tuid))
+        try:
+            await bot.send_message(tuid, "Админ забрал гифт из инвентаря")
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception("takegift")
+        await message.answer("Ошибка /takegift: " + str(e)[:200])
+
+
+@router.message(Command("gifts"))
+async def cmd_gifts(message: Message):
+    """Список гифтов игрока: /gifts ID"""
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            return await message.answer("/gifts ID")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден")
+        inv = db.get_inv()
+        items = inv.get(str(tuid), []) if isinstance(inv, dict) else []
+        if not isinstance(items, list) or not items:
+            return await message.answer("Пусто у ID " + str(tuid))
+        lines = ["Гифты ID " + str(tuid) + ":"]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            lines.append(
+                "• " + str(it.get("id")) + " | " + str(it.get("price", "?")) + "★ | " + str(it.get("link", ""))[:40]
+            )
+        await message.answer("\n".join(lines))
+    except Exception as e:
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+@router.message(Command("force"))
+async def cmd_force(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/force ID или 0")
+    if parts[1] in ("0", "off", "none"):
+        v = None
+    else:
+        v = db.parse_user_ref(parts[1])
+        if v is None:
+            try:
+                v = int(parts[1])
+            except Exception:
+                return await message.answer("Юзер не найден")
+    a = db.get_arena()
+    a["force_uid"] = v
+    db.save_arena(a)
+    await message.answer("force=" + str(a["force_uid"]))
+
+
+@router.message(Command("odds777"))
+async def cmd_odds(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/odds777 0.005")
+    s = db.get_settings()
+    s["slot_777"] = float(parts[1])
+    db.save_settings(s)
+    await message.answer("slot_777=" + str(s["slot_777"]))
+
+
+@router.message(Command("owner2"))
+async def cmd_owner2(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/owner2 ID")
+    st = db.get_settings()
+    st["owner2"] = int(parts[1])
+    db.save_settings(st)
+    await message.answer("ok owner2=" + parts[1])
+
+
+@router.message(Command("addadmin"))
+async def cmd_addadmin(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/addadmin ID")
+    st = db.get_settings()
+    adm = st.setdefault("admins", [])
+    adm.append(int(parts[1]))
+    st["admins"] = list(set(int(x) for x in adm))
+    db.save_settings(st)
+    await message.answer("admin ok")
+
+
+
+@router.message(Command("deltop"))
+async def cmd_deltop(message: Message):
+    """Убрать из топа: /deltop ID — deposited=0"""
+    if not db.is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/deltop ID или @user")
+    tuid = db.parse_user_ref(parts[1])
+    if tuid is None:
+        try:
+            tuid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    u = db.get_users()
+    k = str(tuid)
+    if k not in u or not isinstance(u.get(k), dict):
+        return await message.answer("Нет в базе")
+    old = int(u[k].get("deposited") or 0)
+    u[k]["deposited"] = 0
+    db.save_users(u)
+    await message.answer("Убран из топа ID " + str(tuid) + " (было деп " + str(old) + "★)")
+
+
+async def _credit_deposit(oid: str, amount: int, admin_id: int, message_or_cb) -> str:
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return "already"
+    tuid = int(row["uid"])
+    db.ensure_user(tuid, row.get("username") or "")
+    bal = change_balance(tuid, amount, "deposit by " + str(admin_id))
+    u = db.get_users()
+    u[str(tuid)]["deposited"] = int(u[str(tuid)].get("deposited") or 0) + amount
+    db.save_users(u)
+    row["status"] = "done"
+    row["amount"] = amount
+    row["by"] = admin_id
+    deps[oid] = row
+    db.save_deposits(deps)
+    un = row.get("username") or tuid
+    text = "✅ Зачислено " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+    try:
+        await bot.send_message(tuid, "✅ Депозит принят: +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+    except Exception as e:
+        log.warning("dep notify user: %s", e)
+    return text
+
+
+@router.callback_query(F.data.startswith("depok:"))
+async def cb_depok(callback: CallbackQuery):
+    try:
+        if not db.is_admin(callback.from_user.id):
+            return await callback.answer("нет доступа", show_alert=True)
+        parts = (callback.data or "").split(":")
+        if len(parts) != 3:
+            return await callback.answer("bad")
+        amount = int(parts[2])
+        oid = parts[1]
+        result = await _credit_deposit(oid, amount, callback.from_user.id, callback)
+        if result == "already":
+            return await callback.answer("Уже обработано", show_alert=True)
+        try:
+            await callback.message.edit_text(result)
+        except Exception:
+            await callback.message.answer(result)
+        await callback.answer("Готово")
+    except Exception as e:
+        log.exception("depok")
+        await callback.answer("Ошибка: " + str(e)[:80], show_alert=True)
+
+
+@router.callback_query(F.data.startswith("depask:"))
+async def cb_depask(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("нет доступа", show_alert=True)
+    oid = (callback.data or "").split(":")[-1]
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return await callback.answer("Уже обработано", show_alert=True)
+    _dep_pending_amount[callback.from_user.id] = ("stars", oid)
+    await callback.answer()
+    await callback.message.answer(
+        "Своя сумма ★ для ID " + str(row.get("uid")) + " (заказ #" + oid + ")\n"
+        "Напиши ТОЛЬКО число, например:\n1500"
+    )
+
+
+@router.callback_query(F.data.startswith("depgift:"))
+async def cb_depgift(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("нет доступа", show_alert=True)
+    oid = (callback.data or "").split(":")[-1]
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return await callback.answer("Уже обработано", show_alert=True)
+    _dep_pending_amount[callback.from_user.id] = ("gift", oid)
+    await callback.answer()
+    await callback.message.answer(
+        "Гифт для ID " + str(row.get("uid")) + " (заказ #" + oid + ")\n"
+        "Напиши: цена ссылка\n"
+        "Пример:\n1500 https://t.me/nft/..."
+    )
+
+
+@router.callback_query(F.data.startswith("depno:"))
+async def cb_depno(callback: CallbackQuery):
+    try:
+        if not db.is_admin(callback.from_user.id):
+            return await callback.answer("нет доступа", show_alert=True)
+        oid = (callback.data or "").split(":")[-1]
+        deps = db.get_deposits()
+        row = deps.get(oid)
+        if not row or row.get("status") != "pending":
+            return await callback.answer("Уже обработано", show_alert=True)
+        row["status"] = "rejected"
+        row["by"] = callback.from_user.id
+        deps[oid] = row
+        db.save_deposits(deps)
+        try:
+            await callback.message.edit_text("❌ Отклонено #" + oid + " ID " + str(row.get("uid")))
+        except Exception:
+            pass
+        try:
+            await bot.send_message(int(row["uid"]), "❌ Депозит отклонён. Напиши админу.")
+        except Exception:
+            pass
+        await callback.answer("Отклонено")
+    except Exception as e:
+        await callback.answer(str(e)[:80], show_alert=True)
+
+
+@router.message(F.text)
+async def cmd_admin_pending_text(message: Message):
+    """Своя сумма ★ / гифт после депозита + текст рассылки. Не глотает команды."""
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+    aid = message.from_user.id
+    # рассылка: ждём текст после /broadcast (мод или админ)
+    if _broadcast_pending.get(aid) and db.is_moderator(aid):
+        _broadcast_pending.pop(aid, None)
+        await _do_broadcast(aid, text, message)
+        return
+    if not db.is_admin(aid):
+        return
+    pending = _dep_pending_amount.get(aid)
+    if not pending:
+        return
+    kind, oid = pending
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        _dep_pending_amount.pop(aid, None)
+        return await message.answer("Заявка уже закрыта")
+
+    if kind == "stars":
+        if not text.isdigit():
+            return  # not our message
+        _dep_pending_amount.pop(aid, None)
+        amount = int(text)
+        if amount < 1:
+            return await message.answer("Сумма > 0")
+        try:
+            result = await _credit_deposit(oid, amount, aid, message)
+            await message.answer(result if result != "already" else "Уже обработано")
+        except Exception as e:
+            await message.answer("Ошибка: " + str(e)[:150])
+        return
+
+    if kind == "gift":
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[0].isdigit():
+            return await message.answer("Формат: цена ссылка\n1500 https://...")
+        _dep_pending_amount.pop(aid, None)
+        price = int(parts[0])
+        link = parts[1].strip()
+        tuid = int(row["uid"])
+        db.ensure_user(tuid, row.get("username") or "")
+        inv = db.get_inv()
+        item = {"id": db.new_id(), "link": link, "price": price, "title": "Gift"}
+        inv.setdefault(str(tuid), []).append(item)
+        db.save_inv(inv)
+        # гифт-депозит тоже в топ (deposited)
+        try:
+            users = db.get_users()
+            uk = str(tuid)
+            if uk not in users or not isinstance(users.get(uk), dict):
+                db.ensure_user(tuid)
+                users = db.get_users()
+            users[uk]["deposited"] = int(users[uk].get("deposited") or 0) + int(price)
+            db.save_users(users)
+        except Exception as e:
+            log.warning("gift dep top: %s", e)
+        row["status"] = "done"
+        row["gift"] = item
+        row["amount"] = price
+        row["by"] = aid
+        deps[oid] = row
+        db.save_deposits(deps)
+        await message.answer("✅ Гифт " + str(price) + "★ в инвентарь ID " + str(tuid) + " (в топ +" + str(price) + "★)")
+        try:
+            await bot.send_message(tuid, "🎁 Депозит-гифт принят (~" + str(price) + "★)\n" + link)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("wdone:"))
+async def cb_wdone(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("no")
+    wid = callback.data.split(":")[1]
+    w = db.get_withdraws()
+    for row in w:
+        if row.get("id") == wid:
+            row["status"] = "done"
+            try:
+                await bot.send_message(row["uid"], "✅ Гифт отправлен")
+            except Exception:
+                pass
+    db.save_withdraws(w)
+    await callback.answer("ok")
+    try:
+        await callback.message.edit_reply_markup(None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("wrej:"))
+async def cb_wrej(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("no")
+    wid = callback.data.split(":")[1]
+    w = db.get_withdraws()
+    for row in w:
+        if row.get("id") == wid and row.get("status") == "pending":
+            row["status"] = "rejected"
+            inv = db.get_inv()
+            inv.setdefault(str(row["uid"]), []).append(row["gift"])
+            db.save_inv(inv)
+            try:
+                if row.get("type") == "stars":
+                    change_balance(row["uid"], int(row.get("amount") or 0), "stars_withdraw_reject")
+                else:
+                    change_balance(row["uid"], WITHDRAW_FEE, "withdraw_reject_fee")
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    row["uid"],
+                    "❌ Вывод отклонён, средства возвращены" if row.get("type") == "stars" else "❌ Вывод отклонён, гифт возвращён",
+                )
+            except Exception:
+                pass
+    db.save_withdraws(w)
+    await callback.answer("rejected")
+
+
+
+
+async def on_startup():
+    url = WEBAPP_URL or os.getenv("RAILWAY_PUBLIC_DOMAIN") or ""
+    if url and not url.startswith("http"):
+        url = "https://" + url
+    if url:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Winline", web_app=WebAppInfo(url=url))
+            )
+            log.info("menu button set %s", url)
+        except Exception as e:
+            log.warning("menu: %s", e)
+
+
+
+@app.post("/api/admin/reset_top")
+async def admin_reset_top(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    users = db.get_users()
+    k = str(target)
+    if k not in users or not isinstance(users.get(k), dict):
+        raise HTTPException(404, "user not found")
+    users[k]["deposited"] = 0
+    db.save_users(users)
+    return {"ok": True, "uid": target, "deposited": 0}
+
+
+@app.post("/api/admin/reset_profile")
+async def admin_reset_profile(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    users = db.get_users()
+    k = str(target)
+    if k not in users or not isinstance(users.get(k), dict):
+        raise HTTPException(404, "user not found")
+    users[k]["balance"] = 0
+    users[k]["deposited"] = 0
+    users[k]["wager"] = 0
+    users[k]["upgrade_win_streak"] = 0
+    users[k]["upgrade_lose_streak"] = 0
+    db.save_users(users)
+    inv = db.get_inv()
+    if isinstance(inv, dict):
+        inv[k] = []
+        db.save_inv(inv)
+    try:
+        mines = db.get_mines()
+        if isinstance(mines, dict) and k in mines:
+            del mines[k]
+            db.save_mines(mines)
+    except Exception:
+        pass
+    try:
+        await bot.send_message(target, "⚠️ Профиль обнулён администратором")
+    except Exception:
+        pass
+    return {"ok": True, "uid": target, "balance": 0, "deposited": 0, "wager": 0}
+
+
+
+@app.post("/api/admin/reset_all_top")
+async def admin_reset_all_top(x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner only")
+    users = db.get_users()
+    for k, v in list(users.items()):
+        if isinstance(v, dict):
+            v["deposited"] = 0
+    db.save_users(users)
+    return {"ok": True}
+
+
+@app.on_event("startup")
+async def startup():
+    try:
+        log.info(
+            "OWNER_ID=%s BOT=%s... CHANNEL=%s",
+            OWNER_ID,
+            (BOT_TOKEN or "")[:12],
+            REQUIRED_CHANNEL or "-",
+        )
+        if not BOT_TOKEN:
+            log.error("BOT_TOKEN пустой — задай в Railway Variables")
+        async def _poll():
+            try:
+                log.info("polling start")
+                await dp.start_polling(bot)
+            except Exception:
+                log.exception("polling crashed")
+        asyncio.create_task(_poll())
+
+        async def _rocket_loop():
+            log.info("rocket loop start")
+            # init round if needed
+            try:
+                r = db.get_rocket()
+                if not r.get("betting_ends_at"):
+                    r = _rocket_start_betting(r)
+                    db.save_rocket(r)
+            except Exception:
+                log.exception("rocket init")
+            while True:
+                try:
+                    _rocket_tick()
+                except Exception:
+                    log.exception("rocket_tick loop")
+                await asyncio.sleep(0.15)
+
+        asyncio.create_task(_rocket_loop())
+        try:
+            await on_startup()
+        except Exception:
+            log.exception("on_startup failed")
+    except Exception:
+        log.exception("startup failed")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        await bot.session.close()
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
