@@ -231,9 +231,29 @@ def seed_catalog():
 
 
 def available_stock():
-    """Подарки апгрейда = включённые в каталоге (ассеты). count большой — штучного склада нет."""
-    return [{"id": g["slug"], "name": g["name"], "image": g["image"], "price": g["price"], "count": 9999, "sg_id": g.get("sg_id", "")}
-            for g in db.catalog_list(enabled_only=True) if g["price"] > 0]
+    """Подарки апгрейда = включённые в каталоге + шляпа с PNG (всегда первая)."""
+    out = [{
+        "id": "hat",
+        "name": "Шляпа волшебника",
+        "image": "/images/hat.png",
+        "price": HAT_VALUE,
+        "count": 9999,
+        "sg_id": "",
+    }]
+    for g in db.catalog_list(enabled_only=True):
+        if g["price"] <= 0:
+            continue
+        if str(g["slug"]) == "hat":
+            continue
+        out.append({
+            "id": g["slug"],
+            "name": g["name"],
+            "image": g["image"],
+            "price": g["price"],
+            "count": 9999,
+            "sg_id": g.get("sg_id", ""),
+        })
+    return out
 
 
 def _old_available_stock():
@@ -729,7 +749,7 @@ def build_state(uid: int) -> dict:
         "prizes": prizes, "chest_round": chest_round,
         "config": {
             "chance_min": 0.05, "chance_max": 0.70,
-            "sections": {"upgrade": True, "chests": True, "leaders": False, "staking": False},
+            "sections": {"upgrade": True, "chests": True, "leaders": True, "staking": False},
             "gift_upgrade": gifts_on, "tier_enabled": False,
             "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
             "tiers": {"random": random_tier},
@@ -751,7 +771,7 @@ def build_state(uid: int) -> dict:
             "ui_texts": {},
         },
         "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
-                  "games": db.count_games(uid)},
+                  "games": db.count_games(uid), "best": db.best_drop(uid)},
         "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
         "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
         "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
@@ -782,6 +802,8 @@ async def personal_boss_state(request: Request, x_init_data: str | None = Header
 @app.post("/api/spin")
 async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
+    if db.limit("upg_nft_on") < 1:
+        raise HTTPException(400, detail={"code": "upgrade_closed", "message": "Апгрейд на подарки сейчас закрыт"})
     show = max(0.01, min(0.70, float(body.chance)))
     st = available_stock()
     prize = 0.0
@@ -821,9 +843,9 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
         gift_row = {"id": "hat", "name": "Шляпа волшебника", "price": HAT_VALUE, "image": "/images/hat.png"}
     db.ledger(cost, payout if win else 0)
     db.add_turnover(uid, cost)
-    with db.connect() as c:
-        c.execute("INSERT INTO spin_log(user_id,chance,cost,win,created) VALUES(?,?,?,?,?)",
-                  (uid, show, cost, 1 if win else 0, int(time.time())))
+    tgt = (gift_row or {}).get("name") or ("Шляпа волшебника" if win else "")
+    img = (gift_row or {}).get("image") or ("/images/hat.png" if win else "")
+    db.log_game(uid, "upgrade", win, cost, payout if win else 0, target=tgt, image=img, chance=show)
     return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "win": win, "chance": show, "cost_ton": cost, "gift": gift_row}
 
 def _mult(opened, empties):
@@ -873,6 +895,7 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
             c.execute("UPDATE chest_rounds SET active=0,opened=?,bad=? WHERE user_id=?",
                       (json.dumps(opened), json.dumps(bad), uid))
             bal = float(c.execute("SELECT coins FROM users WHERE id=?", (uid,)).fetchone()["coins"])   # тот же коннект: иначе "database is locked"
+            db.log_game(uid, "chests", False, bet, 0, target="Кладбище")
             return {"finished": True, "balance_ton": bal, "hatcoin_balance": 0, "safe": False, "win": False, "cell": cell,
                     "bad": bad, "opened": opened, "mult": 0, "payout_ton": 0}
         opened.append(cell)
@@ -908,6 +931,7 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
             raise HTTPException(400, detail={"code": "no_round"})
         c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
     db.ledger(0, payout)
+    db.log_game(uid, "chests", True, float(row["bet"]), payout, target="Кладбище x%.2f" % mult)
     return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True,
             "payout_ton": payout, "mult": mult, "opened": opened, "bad": bad}
 
@@ -976,6 +1000,7 @@ async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None 
         c.execute("UPDATE users SET upgrade_win_streak=?,upgrade_lose_streak=? WHERE id=?", (ws, ls, uid))
     db.ledger(amount, payout)
     db.add_turnover(uid, amount)
+    db.log_game(uid, "upgrade", win, amount, payout, target=f"x{mult}", chance=chance)
     return {"win": win, "mult": mult, "bet": amount, "payout": payout, "chance": chance, "balance_ton": db.get_coins(uid)}
 
 # ---------- inventory / withdraw ----------
@@ -1082,16 +1107,62 @@ async def shop_stub(request: Request, x_init_data: str | None = Header(None)):
     return {"offers": [], "balance_ton": db.get_coins(uid), "hatcoin_balance": 0}
 
 @app.post("/api/history")
-async def history_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {"rows": []}
+async def history_api(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    return {"rows": db.history(uid, 50)}
 
 @app.post("/api/leaderboard")
-async def leaderboard_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
+async def leaderboard_api(request: Request, x_init_data: str | None = Header(None)):
+    uid = uid_from(request, x_init_data)
+    mode = "turnover"
+    try:
+        raw = await request.json()
+        mode = str((raw or {}).get("mode") or "turnover").lower()
+    except Exception:
+        mode = "turnover"
+    if mode not in ("turnover", "deposits", "wins", "players"):
+        mode = "turnover"
+    board = db.leaderboard(mode, 50)
+    my_score = db.leaderboard_score(uid, mode)
+    rows = []
+    me_rank = None
+    for i, r in enumerate(board, 1):
+        is_me = int(r["user_id"]) == int(uid)
+        if is_me:
+            me_rank = i
+        name = r["username"] or ("Игрок " + str(r["user_id"]))
+        rows.append({
+            "rank": i,
+            "key": str(r["user_id"]),
+            "name": name,
+            "total_ton": r["score"],
+            "me": is_me,
+            "avatar": "",
+        })
+    if me_rank is None and my_score > 0:
+        # игрок есть, но не в топ-50 — посчитаем грубый ранг
+        all_board = db.leaderboard(mode, 500)
+        for i, r in enumerate(all_board, 1):
+            if int(r["user_id"]) == int(uid):
+                me_rank = i
+                break
     now = int(time.time())
-    return {"since": now, "now": now, "ends": now, "season": "", "alltime": True,
-            "endless": True, "finished": False, "me": {"rank": None, "excluded": False}, "rows": []}
+    me = None
+    if me_rank is not None or my_score > 0:
+        me = {"rank": me_rank, "total_ton": my_score, "excluded": False}
+    labels = {
+        "turnover": "по обороту за всё время",
+        "deposits": "по депозитам за всё время",
+        "wins": "по выигрышам за всё время",
+        "players": "по числу игр (участники)",
+    }
+    return {
+        "since": 0, "now": now, "ends": 0, "season": "", "alltime": True,
+        "endless": True, "finished": False,
+        "mode": mode,
+        "subtitle": labels.get(mode, labels["turnover"]),
+        "me": me, "rows": rows,
+    }
 
 @app.post("/api/wallet")
 async def wallet_stub(request: Request, x_init_data: str | None = Header(None)):
