@@ -1,1142 +1,3103 @@
 """
-Winline Halloween — один server.py (как старый).
-Запуск: uvicorn server:app --host 0.0.0.0 --port $PORT
+Winline Mini App + Admin Bot
+Railway: uvicorn server:app --host 0.0.0.0 --port $PORT
 """
-from __future__ import annotations
-import hashlib, hmac, json, math, os, random, time, uuid
-from pathlib import Path
-from urllib.parse import parse_qsl
+import asyncio
+import logging
+import math
+import os
+import random
+import time
+from typing import Optional
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))   # import db / config / bots работает из любой папки
-
-import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Message,
+    WebAppInfo,
+)
+from fastapi import FastAPI, Header, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 import db
 from config import (
-    BOT_TOKEN, OWNER_ID, STATICGRAM_API, RELAYER_JSON, WITHDRAW_STEP,
-    DAILY_WITHDRAW_CAP, MIN_BET, MAX_BET, MINES_HOUSE, DEV_USER_ID, WEBAPP_URL, ADMIN_IDS,
+    BANK,
+    BOT_TOKEN,
+    CATUP_API,
+    MIN_BET,
+    OWNER_ID,
+    OWNER2_ID,
+    WEBAPP_URL,
+    WITHDRAW_FEE,
 )
+try:
+    from config import BOT_USERNAME
+except ImportError:
+    BOT_USERNAME = "winlinebot"
+try:
+    from config import REQUIRED_CHANNEL, MOD_GIVE_MAX, MIN_WITHDRAW
+except ImportError:
+    REQUIRED_CHANNEL = ""
+    MOD_GIVE_MAX = 2500
+    MIN_WITHDRAW = 1000
 
-db.init()
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("winline")
+
+# ---------- Telegram bot ----------
+session = AiohttpSession(api=TelegramAPIServer.from_base(CATUP_API))
+bot = Bot(token=BOT_TOKEN, session=session)
+dp = Dispatcher()
+router = Router()
+dp.include_router(router)
+
 app = FastAPI(title="Winline")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+STATIC = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC):
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-class InitDataFromBody:
-    """Мини-аппка шлёт POST {initData, ...} — переносим initData в заголовок X-Init-Data."""
-    def __init__(self, app): self.app = app
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST" or not scope["path"].startswith("/api/"):
-            return await self.app(scope, receive, send)
-        chunks, more = [], True
-        while more:
-            m = await receive()
-            chunks.append(m.get("body", b"")); more = m.get("more_body", False)
-        body = b"".join(chunks)
-        headers = list(scope["headers"])
-        if not any(k == b"x-init-data" for k, _ in headers):
-            try:
-                init = (json.loads(body or b"{}") or {}).get("initData")
-                if isinstance(init, str) and init:
-                    headers.append((b"x-init-data", init.encode()))
-                    scope = {**scope, "headers": headers}
-            except Exception:
-                pass
-        sent = False
-        async def replay():
-            nonlocal sent
-            if not sent:
-                sent = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            return await receive()
-        await self.app(scope, replay, send)
-
-app.add_middleware(InitDataFromBody)
+def uid_from(x) -> int:
+    return int(x)
 
 
-@app.exception_handler(StarletteHTTPException)
-async def _http_err(request, exc):
-    """Фронт читает data.error / e.code — приводим все ошибки к такому виду."""
-    d = exc.detail
-    if isinstance(d, dict):
-        body = {"error": d.get("code") or "error", "message": d.get("message") or d.get("code") or "error", **d}
-    else:
-        msg = str(d)
-        if exc.status_code == 503 and msg == "maintenance":
-            msg = db.get_setting("maintenance_text", "") or "Сервис на технических работах. Скоро вернёмся."
-            body = {"error": "maintenance", "message": msg}
-        else:
-            body = {"error": msg, "message": msg}
-    return JSONResponse(body, status_code=exc.status_code)
-
-
-@app.exception_handler(RequestValidationError)
-async def _val_err(request, exc):
-    return JSONResponse({"error": "bad_request", "message": "bad request"}, status_code=422)
-
-# Раскладка репозитория: server.py, config.py, db.py, static/ (внутри index.html, /images и все файлы фронта)
-ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / "static"
-ASSETS = STATIC / "static" if (STATIC / "static").is_dir() else STATIC      # /static/...  (если файлы лежат во вложенной static/static — тоже работает)
-IMAGES = next((p for p in (STATIC / "images", ASSETS / "images", ROOT / "images") if p.is_dir()), None)
-
-MINES_MULT = {
-    3: [1.0,1.12,1.28,1.47,1.7,2.0,2.35,2.8,3.4,4.2,5.2,6.5,8.2,10.5,13.5,17.5,23.0,30.0,40.0,55.0,75.0,100.0],
-    5: [1.0,1.2,1.45,1.8,2.25,2.9,3.7,4.8,6.3,8.4,11.5,15.5,21.0,29.0,40.0,56.0,80.0,115.0,170.0,250.0],
-    8: [1.0,1.35,1.85,2.6,3.7,5.3,7.8,11.5,17.5,27.0,42.0,65.0,105.0,170.0,280.0,480.0,850.0],
-}
-UPGRADE_BASE = {2: 0.48, 5: 0.15, 10: 0.05}
-UPGRADE_LOSS = {2:{2:0.04,3:0.07,4:0.09,5:0.11},5:{3:0.015,4:0.025,5:0.035},10:{3:0.008,4:0.012,5:0.018}}
-CELLS = 25
-HAT_VALUE = float(os.getenv("HAT_VALUE", "12"))        # во сколько GRAM оценивается обычная шляпа
-MINES_RTP = float(os.getenv("MINES_RTP", "0.95"))
-MINES_MAX_MULT = float(os.getenv("MINES_MAX_MULT", "1000"))      # потолок множителя (защита банка от x50000 на 20 минах)       # возврат игрокам в минах (0.95 = комиссия 5%)
-CX_CHOICES = [1, 3, 5, 10, 15, 20]
-CHANCE_GRID = [{"chance": round(p / 100, 2), "cost_ton": round(HAT_VALUE * p / 100, 2)} for p in range(5, 71)]
-
-
-def _mult_at(empties: int, k: int) -> float:
-    """Честный множитель после k безопасных клеток при `empties` минах из 25 (с комиссией 1-RTP)."""
-    surv = 1.0
-    for i in range(k):
-        surv *= (CELLS - empties - i) / (CELLS - i)
-    return min(db.limit("mines_max_mult"), round(MINES_RTP / surv, 2)) if surv > 0 else 0.0
-
-
-def _ladder() -> dict:
-    return {str(e): [_mult_at(e, k) for k in range(1, CELLS - e + 1)] for e in CX_CHOICES}
-
-# ---------- auth ----------
-def verify_init(raw: str) -> int:
-    if not raw:
-        if DEV_USER_ID:
-            return int(DEV_USER_ID)
-        print("AUTH 401: initData пустой (открыто не из бота?)")
-        raise HTTPException(401, "no initData")
-    if raw.lower().startswith("tma "):
-        raw = raw[4:].strip()
-    if not BOT_TOKEN:
-        raise HTTPException(503, "server misconfigured: BOT_TOKEN is empty")
-    pairs = dict(parse_qsl(raw, keep_blank_values=True))
-    got = pairs.pop("hash", "")
-    secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-
-    def _calc(p):
-        chk = "\n".join(f"{k}={p[k]}" for k in sorted(p))
-        return hmac.new(secret, chk.encode(), hashlib.sha256).hexdigest()
-
-    # StaticGram (как и Telegram): в data_check_string входят ВСЕ поля кроме hash, включая signature.
-    # На случай старых клиентов пробуем ещё и вариант без signature.
-    ok = bool(got) and hmac.compare_digest(_calc(pairs), got)
-    if not ok and "signature" in pairs:
-        ok = bool(got) and hmac.compare_digest(_calc({k: v for k, v in pairs.items() if k != "signature"}), got)
-    if not ok:
-        print("AUTH 401: bad signature; token_len=%d, keys=%s" % (len(BOT_TOKEN), sorted(pairs)))
-        raise HTTPException(401, "bad signature")
-    if time.time() - int(pairs.get("auth_date") or 0) > 86400:
-        print("AUTH 401: expired")
-        raise HTTPException(401, "expired")
-    return int(json.loads(pairs["user"])["id"])
-
-def uid_from(request: Request, x_init: str | None = None) -> int:
-    raw = x_init or request.headers.get("x-init-data") or request.headers.get("authorization") or ""
-    if raw.lower().startswith("tma "):
-        raw = raw[4:]
-    uid = verify_init(raw.strip())
-    if db.get_setting("maintenance") == "1" and not db.is_admin(uid):
-        raise HTTPException(503, "maintenance")
-    uname = ""
+# ---------- helpers ----------
+def public_user(uid: int) -> dict:
     try:
-        uname = (json.loads(dict(parse_qsl(raw.strip())).get("user") or "{}").get("username") or "")
-    except Exception:
-        pass
-    db.ensure_user(uid, uname)
-    try:                                              # игрок пришёл по реферальной ссылке (startapp=ref123) — запоминаем, если он ещё не играл
-        sp = dict(parse_qsl(raw.strip())).get("start_param") or ""
-        if sp.startswith("ref") and sp[3:].isdigit() and db.ref_of(uid) is None and db.turnover(uid) == 0:
-            db.ref_attach(uid, int(sp[3:]))
+        u = db.ensure_user(uid) or {}
     except Exception as e:
-        print("ref attach error", e)
-    with db.connect() as c:
-        r = c.execute("SELECT banned FROM users WHERE id=?", (uid,)).fetchone()
-        if r and r["banned"]:
-            raise HTTPException(403, "banned")
-    return uid
-
-def stock():
-    p = Path(RELAYER_JSON)
-    if not p.exists():
-        return []
+        log.exception("ensure_user")
+        u = {"balance": 0, "wager": 0, "deposited": 0, "username": str(uid)}
     try:
-        return json.loads(p.read_text("utf-8")).get("stock") or []
+        admin = db.is_admin(uid)
     except Exception:
-        return []
-
-GIFT_MARGIN = float(os.getenv("GIFT_MARGIN", "0.08"))    # наценка на подарки (видна в цене: цена = подарок×шанс/(1-наценка))
-HOUSE_EDGE = float(os.getenv("HOUSE_EDGE", "0.08"))      # комиссия обычной шляпы
-
-
-import re as _re
-_DEFAULT_PRICES = {"dragon": 60, "frost": 50, "thunder": 50, "crystal": 45, "sun": 45, "rainbow": 40, "trident": 40, "sword": 35,
-                   "skeleton hand": 80, "hall ember poker": 70, "hall emerald scepter": 90, "hall host axe": 70, "basement wrench": 40}
-
-
-def _gift_name(stem: str) -> str:
-    n = _re.sub(r"[-_]?(icon|pixel)\b", "", stem)
-    n = _re.sub(r"[-_]v\d+$", "", n)
-    n = _re.sub(r"[-_]+", " ", n).strip()
-    return n.title() or stem
-
-
-def seed_catalog():
-    """Подарки апгрейда берём из картинок static/gifts/* (имя файла = название подарка).
-    Новые файлы добавляются сами; цены и «вкл/выкл» меняются в админ-боте и не перезатираются.
-    Подарки можно добавлять и из бота: админ шлёт фото с подписью «Название | цена»."""
-    items = []
-    seen = set()
-    for folder, urlbase in ((ASSETS / "gifts", "/static/gifts"),):
-        if not folder.is_dir():
-            continue
-        for f in sorted(folder.iterdir()):
-            if f.suffix.lower() not in (".png", ".webp"):
-                continue
-            if "pixel" in f.stem:                       # дубль иконки
-                continue
-            slug = _re.sub(r"[^a-z0-9]+", "_", _re.sub(r"[-_]?icon", "", f.stem.lower())).strip("_")[:28]
-            if not slug or slug in seen:
-                continue
-            seen.add(slug)
-            name = _gift_name(f.stem)
-            price = _DEFAULT_PRICES.get(name.lower(), 20)
-            items.append((slug, name, f"{urlbase}/{f.name}", price))
-    if items:
-        db.catalog_seed(items)
-
-
-def available_stock():
-    """Подарки апгрейда = включённые в каталоге (ассеты). count большой — штучного склада нет."""
-    return [{"id": g["slug"], "name": g["name"], "image": g["image"], "price": g["price"], "count": 9999, "sg_id": g.get("sg_id", "")}
-            for g in db.catalog_list(enabled_only=True) if g["price"] > 0]
-
-
-def _old_available_stock():
-    """Склад релеера минус подарки, которые уже выиграны игроками и ждут отправки."""
-    st = stock()
+        admin = False
     try:
-        with db.connect() as c:
-            held = {r["gift_id"]: r["n"] for r in c.execute(
-                "SELECT gift_id, COUNT(*) AS n FROM inventory WHERE status IN ('won','sending') GROUP BY gift_id")}
+        owner = db.is_owner(uid)
     except Exception:
-        held = {}
-    out = []
-    for x in st:
-        left = int(x.get("count") or 0) - int(held.get(str(x.get("id")), 0))
-        if left > 0:
-            out.append({**x, "count": left})
-    return out
-
-
-async def bot_api(method: str, payload: dict):
-    if not BOT_TOKEN:
-        return False, "no token"
-    url = f"{STATICGRAM_API}/bot{BOT_TOKEN}/{method}"
+        owner = False
     try:
-        async with httpx.AsyncClient(timeout=20) as h:
-            r = await h.post(url, json=payload)
-        j = r.json()
-        return bool(j.get("ok")), "" if j.get("ok") else str(j.get("description", ""))[:200]
-    except Exception as e:
-        return False, str(e)[:200]
-
-async def bot_raw(method: str, payload: dict) -> dict:
-    if not BOT_TOKEN:
-        return {"ok": False, "description": "no token"}
-    try:
-        async with httpx.AsyncClient(timeout=20) as h:
-            r = await h.post(f"{STATICGRAM_API}/bot{BOT_TOKEN}/{method}", json=payload)
-        return r.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)[:200]}
-
-# ---------- models ----------
-class SpinIn(BaseModel):
-    chance: float = Field(ge=0.01, le=0.70)
-    tier: str = "random"
-    gift: str | None = None
-    cost: float | None = None
-
-class ChestStart(BaseModel):
-    empties: int = Field(ge=1, le=24)
-    bet: float
-
-class ChestOpen(BaseModel):
-    cell: int = Field(ge=0, le=24)
-
-class UpgradeIn(BaseModel):
-    amount: float
-    mult: int
-
-class IdIn(BaseModel):
-    id: str
-
-class PrizeWdIn(BaseModel):
-    prize_id: int = 0
-    fee_ton: float = 0
-
-
-async def _notify_admins(text: str, markup=None):
-    ids = set(ADMIN_IDS)
-    if OWNER_ID:
-        ids.add(int(OWNER_ID))
-    try:
-        with db.connect() as c:
-            ids.update(int(r["user_id"]) for r in c.execute("SELECT user_id FROM admins"))
+        mod = bool(getattr(db, "is_moderator", lambda _x: False)(uid))
     except Exception:
-        pass
-    for aid in ids:
-        payload = {"chat_id": aid, "text": text, "parse_mode": "HTML"}
-        if markup:
-            payload["reply_markup"] = markup
-        try:
-            await bot_api("sendMessage", payload)
-        except Exception as e:
-            print("notify admin fail", aid, e)
-
-
-@app.post("/api/withdraw/chat")
-async def withdraw_chat(body: PrizeWdIn, request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {"ok": True}
-
-
-async def prize_withdraw(uid: int, prize_id: int):
-    fee = gift_withdraw_fee()
-    with db.connect() as c:
-        row = c.execute("SELECT gift_id,name,price FROM inventory WHERE rowid_=? AND user_id=?", (prize_id, uid)).fetchone()
-        if not row or c.execute("SELECT status FROM inventory WHERE rowid_=?", (prize_id,)).fetchone()["status"] != "won":
-            raise HTTPException(400, detail={"code": "not_sellable"})
-        if str(row["gift_id"]) == "hat":
-            raise HTTPException(400, detail={"code": "not_withdrawable", "message": "Шляпу можно только продать"})
-    if fee > 0 and not db.spend(uid, fee):                      # комиссия за вывод подарка
-        raise HTTPException(400, detail={"code": "insufficient_funds"})
-    if fee > 0:
-        db.ledger(fee, 0)
-    with db.connect() as c:
-        cur = c.execute("UPDATE inventory SET status='withdraw_pending' WHERE rowid_=? AND user_id=? AND status='won'", (prize_id, uid))
-        if cur.rowcount != 1:
-            if fee > 0:
-                db.add_coins(uid, fee)
-            raise HTTPException(400, detail={"code": "not_sellable"})
-        c.execute("INSERT INTO gift_queue(user_id,gift_id,inv_row,status,created,updated,fee) VALUES(?,?,?,?,?,?,?)",
-                  (uid, row["gift_id"], prize_id, "manual", int(time.time()), int(time.time()), fee))
-        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
-    uname = ""
-    with db.connect() as c:
-        u = c.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
-        uname = (u["username"] if u else "") or ""
-    who = f"@{uname}" if uname else f"id {uid}"
-    cat = db.catalog_get(str(row["gift_id"]))
-    userbot_on = bool(os.getenv("USERBOT_API_ID"))
-    mode = os.getenv("GIFT_DELIVERY", "userbot").lower()          # userbot — шлёт юзербот из своего банка; bot — шлёт бот со своего баланса звёзд
-    if cat and cat.get("sg_id") and mode != "bot" and userbot_on:
-        with db.connect() as c:                       # юзербот заберёт заявку, отправит подарок и сам уведомит игрока
-            c.execute("UPDATE gift_queue SET status='pending', gift_id=?, updated=? WHERE id=?", (cat["sg_id"], int(time.time()), qid))
-        return {"ok": True, "queued": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
-    if cat and cat.get("sg_id") and mode == "bot":    # отправка ботом с баланса звёзд бота
-        res = await bot_raw("sendGift", {"user_id": uid, "gift_id": cat["sg_id"], "text": "Подарок из WinLine 🎁"})
-        if res.get("ok"):
-            with db.connect() as c:
-                c.execute("UPDATE gift_queue SET status='done', updated=? WHERE id=?", (int(time.time()), qid))
-                c.execute("UPDATE inventory SET status='sent' WHERE rowid_=?", (prize_id,))
-            await bot_api("sendMessage", {"chat_id": uid, "text": f"🎁 Подарок «{row['name']}» отправлен тебе в Telegram!"})
-            await _notify_admins(f"✅ Авто-выдача #{qid}: {who} получил «{row['name']}» ({row['price']}★), комиссия {fee:g}★.")
-            return {"ok": True, "sent": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
-        why = str(res.get("description", ""))[:160]
-        print("sendGift failed:", why)
-        extra = f"\n⚠️ Авто-отправка не удалась: {why}\nПроверь баланс звёзд бота и выдай вручную."
-    else:
-        extra = ""
-    await _notify_admins(
-        f"🎁 <b>Заявка на вывод подарка #{qid}</b>\nИгрок: {who} (<code>{uid}</code>)\nПодарок: {row['name']} · {row['price']}★\nКомиссия: {fee:g}★ (оплачена)" + extra,
-        {"inline_keyboard": [[{"text": "✅ Выдан", "callback_data": f"wd:ok:{qid}"}, {"text": "↩️ Вернуть игроку", "callback_data": f"wd:no:{qid}"}]]})
-    return {"ok": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
-
-
-class StarsIn(BaseModel):
-    stars: int = 0
-    prize_id: int = 0
-    fee_ton: float = 0
-
-
-# ---------- пополнение звёздами StaticGram ----------
-class StarsDepIn(BaseModel):
-    amount: float = 0
-    order_id: str = ""
-
-
-@app.post("/api/stars/deposit/create")
-async def stars_deposit_create(body: StarsDepIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    if not BOT_TOKEN:
-        raise HTTPException(400, detail={"code": "stars_disabled"})
-    amount = float(body.amount or 0)
-    if not (amount == amount) or amount < db.limit("deposit_min") or amount > db.limit("deposit_max"):
-        raise HTTPException(400, detail={"code": "bad_amount"})
-    amount = round(amount, 2)
-    stars = int(math.ceil(amount * STARS_PER_COIN))
-    if stars < 1:
-        raise HTTPException(400, detail={"code": "bad_amount"})
-    import uuid
-    order_id = uuid.uuid4().hex[:24]
-    db.deposit_create(order_id, uid, stars, amount)
-    res = await bot_raw("createInvoiceLink", {
-        "title": "Пополнение WinLine", "description": f"{amount:g} монет за {stars}★", "payload": order_id,
-        "currency": "XTR", "provider_token": "", "prices": [{"label": "Монеты", "amount": stars}]})
-    if not res.get("ok") or not res.get("result"):
-        print("createInvoiceLink failed:", res.get("description"))
-        raise HTTPException(502, detail={"code": "invoice_failed"})
-    return {"invoice_url": res["result"], "order_id": order_id, "amount": amount, "stars": stars}
-
-
-@app.post("/api/stars/deposit/status")
-async def stars_deposit_status(body: StarsDepIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    d = db.deposit_get(body.order_id)
-    if not d or int(d["user_id"]) != uid:
-        raise HTTPException(404, detail={"code": "not_found"})
-    return {"status": d["status"], "amount": d["amount"]}
-
-
-# ---------- награды (алмазы) ----------
-GEM_TIERS = [(10, 1.0), (25, 1.1), (50, 1.2), (100, 1.3)]      # (алмазов, множитель монет)
-
-
-def _today() -> str:
-    return time.strftime("%Y-%m-%d", time.gmtime())
-
-
-def rewards_view(uid: int) -> dict:
-    turn = db.turnover(uid)
-    claimed = db.kv_get(uid, "rw_claimed", []) or []
-    daily_done = db.kv_get(uid, "rw_daily", "") == _today()
-    tasks = [
-        {"id": "daily", "title": "Ежедневный вход", "desc": "Заходи каждый день и забирай алмаз", "reward": 1,
-         "progress": 0 if daily_done else 1, "goal": 1, "claimed": daily_done},
-        {"id": "streak3", "title": "Серия апгрейдов", "desc": "Выиграй 3 апгрейда подряд", "reward": 1,
-         "progress": min(3, db.get_streak(uid)), "goal": 3, "claimed": "streak3" in claimed},
-        {"id": "mines10", "title": "Кладбище", "desc": "Открой 10 гробов в «Минах»", "reward": 1,
-         "progress": min(10, int(db.kv_get(uid, "mines_opened", 0) or 0)), "goal": 10, "claimed": "mines10" in claimed},
-        {"id": "turn500", "title": "Оборот 500 монет", "desc": "Крути апгрейд и мины", "reward": 2,
-         "progress": min(500, int(turn)), "goal": 500, "claimed": "turn500" in claimed},
-        {"id": "friend", "title": "Позови друга", "desc": "Друг зашёл по твоей ссылке", "reward": 3,
-         "progress": min(1, int(db.kv_get(uid, "ref_count", 0) or 0)), "goal": 1, "claimed": "friend" in claimed},
-    ]
-    return {"gems": db.get_gems(uid), "tasks": tasks,
-            "exchange": [{"gems": g, "coins": int(g * m)} for g, m in GEM_TIERS],
-            "balance_ton": db.get_coins(uid),
-            "withdraw": {"min": db.limit("withdraw_min"), "max": db.limit("withdraw_max"), "daily": db.limit("withdraw_daily")}}
-
-
-class RewardIn(BaseModel):
-    id: str = ""
-    gems: int = 0
-
-
-@app.api_route("/api/rewards", methods=["GET", "POST"])
-async def rewards(request: Request, x_init_data: str | None = Header(None)):
-    return rewards_view(uid_from(request, x_init_data))
-
-
-@app.post("/api/rewards/claim")
-async def rewards_claim(body: RewardIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    view = rewards_view(uid)
-    task = next((t for t in view["tasks"] if t["id"] == body.id), None)
-    if not task or task["claimed"] or task["progress"] < task["goal"]:
-        raise HTTPException(400, detail={"code": "not_ready"})
-    if task["id"] == "daily":
-        if db.kv_get(uid, "rw_daily", "") == _today():
-            raise HTTPException(400, detail={"code": "not_ready"})
-        db.kv_set(uid, "rw_daily", _today())
-    else:
-        done = list(db.kv_get(uid, "rw_claimed", []) or [])
-        if task["id"] in done:
-            raise HTTPException(400, detail={"code": "not_ready"})
-        done.append(task["id"])
-        db.kv_set(uid, "rw_claimed", done)
-    db.add_gems(uid, int(task["reward"]))
-    return rewards_view(uid)
-
-
-@app.post("/api/rewards/exchange")
-async def rewards_exchange(body: RewardIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    tier = next(((g, m) for g, m in GEM_TIERS if g == int(body.gems)), None)
-    if not tier:
-        raise HTTPException(400, detail={"code": "bad_amount"})
-    if not db.spend_gems(uid, tier[0]):
-        raise HTTPException(400, detail={"code": "insufficient_gems"})
-    coins = int(tier[0] * tier[1])
-    db.add_coins(uid, coins)
-    db.ledger(0, coins)
-    return rewards_view(uid)
-
-
-# ---------- мелочи, которые зовёт фронт ----------
-@app.post("/api/theme/set")
-async def theme_set(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    if isinstance(data, dict) and data.get("theme"):
-        db.kv_set(uid, "theme", str(data["theme"])[:32])
-    return {"ok": True, "theme": db.kv_get(uid, "theme", "halloween")}
-
-
-@app.api_route("/api/settings", methods=["GET", "POST"])
-async def user_settings(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return {"ok": True, "settings": db.kv_get(uid, "settings", {}) or {}}
-
-
-
-# ---------- рефералы и промокоды ----------
-import re as _re_ref
-_CODE_RE = _re_ref.compile(r"^[A-Za-z0-9_]{3,20}$")
-
-
-class CodeIn(BaseModel):
-    code: str = ""
-
-
-@app.post("/api/referral/create")
-async def ref_create(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return {"referral": referral_view(uid)}
-
-
-@app.post("/api/referral/code/check")
-async def ref_code_check(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    code = (body.code or "").strip()
-    if not _CODE_RE.match(code):
-        raise HTTPException(400, detail={"code": "code_invalid", "message": "Код: 3–20 символов, латиница, цифры и _"})
-    owner = db.code_owner(code)
-    return {"available": owner is None or owner == uid}
-
-
-@app.post("/api/referral/code/create")
-@app.post("/api/referral/code/rename")
-async def ref_code_save(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    code = (body.code or "").strip()
-    if not _CODE_RE.match(code):
-        raise HTTPException(400, detail={"code": "code_invalid", "message": "Код: 3–20 символов, латиница, цифры и _"})
-    if not db.code_set(uid, code):
-        raise HTTPException(400, detail={"code": "code_taken", "message": "Код уже занят"})
-    return {"referral": referral_view(uid)}
-
-
-@app.post("/api/referral/withdraw")
-async def ref_withdraw(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    bal = float(db.kv_get(uid, "ref_balance", 0) or 0)
-    if bal < 1:
-        raise HTTPException(400, detail={"code": "below_minimum"})
-    db.kv_set(uid, "ref_balance", 0)
-    db.add_coins(uid, round(bal, 2))
-    db.ledger(0, round(bal, 2))
-    return {"referral": referral_view(uid), "balance_ton": db.get_coins(uid)}
-
-
-@app.post("/api/promo")
-async def promo(body: CodeIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    code = (body.code or "").strip()
-    owner = db.code_owner(code) if code else None
-    if not owner:
-        raise HTTPException(400, detail={"code": "not_found"})
-    if owner == uid:
-        raise HTTPException(400, detail={"code": "promo_inactive", "message": "Свой код активировать нельзя"})
-    if db.ref_of(uid) is not None or not db.ref_attach(uid, owner):
-        raise HTTPException(400, detail={"code": "promo_inactive", "message": "Ты уже активировал код друга"})
-    return {"balance_ton": db.get_coins(uid), "amount_ton": 0, "rewards": [{"name": "Код друга активирован"}]}
-
-
-# ---------- pages ----------
-@app.get("/")
-async def index():
-    for base in (STATIC, ASSETS, ROOT):
-        path = base / "index.html"
-        if path.is_file():
-            return FileResponse(path, headers={"Cache-Control": "no-cache"})
-    return HTMLResponse("<h1>WinLine</h1><p>no index.html</p>")
-
-@app.get("/api/health")
-def health():
-    return {"ok": True, "maintenance": db.get_setting("maintenance") == "1"}
-
-@app.api_route("/api/maintenance", methods=["GET", "POST"])
-def maint(request: Request, x_init_data: str | None = Header(None)):
-    on = db.get_setting("maintenance") == "1"
-    blocked = False
-    if on:
-        try:
-            raw = x_init_data or request.headers.get("authorization") or ""
-            blocked = not db.is_admin(verify_init(raw[4:].strip() if raw.lower().startswith("tma ") else raw.strip()))
-        except HTTPException:
-            blocked = True
-    return {"maintenance": on, "blocked": blocked, "text": db.get_setting("maintenance_text", "")}
-
-# ---------- state / spin / chests ----------
-@app.api_route("/api/state", methods=["GET", "POST"])
-def api_state(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return build_state(uid)
-
-
-STARS_PER_COIN = float(os.getenv("STARS_PER_COIN", "1"))          # сколько звёзд за 1 монету при пополнении
-MIN_DEPOSIT = float(os.getenv("MIN_DEPOSIT", "1"))                  # минимальное пополнение, монет
-SELL_RATE = float(os.getenv("SELL_RATE", "0.9"))
-
-
-def gift_withdraw_fee() -> float:
-    """Плата за вывод подарка (в монетах). Меняется в админ-боте: «Подарки апгрейда» → комиссия."""
-    return max(0.0, db.limit("gift_withdraw_fee"))      # за сколько от цены подарка можно продать приз за монеты
-
-
-def _sell_value(gift_id: str, price: float) -> float:
-    """Шляпа продаётся за HAT_VALUE минус комиссия, подарки — за SELL_RATE от цены."""
-    if str(gift_id) == "hat":
-        return round(HAT_VALUE * (1 - HOUSE_EDGE), 2)
-    return round(float(price or 0) * SELL_RATE, 2)
-
-
-def _prize_view(r: dict) -> dict:
-    price = float(r.get("price") or 0)
-    return {"id": r["id"], "name": r.get("name") or "", "tier": "gift:" + str(r.get("gift_id") or ""),
-            "image": r.get("image") or "", "status": "withdraw_pending" if r.get("status") == "withdraw_pending" else "owned",
-            "sell_ton": _sell_value(r.get("gift_id"), price), "value_ton": price,
-            "withdraw_fee_ton": gift_withdraw_fee()}
-
-
-def _my_prizes(uid: int) -> list:
-    with db.connect() as c:
-        return [_prize_view(dict(r)) for r in c.execute(
-            "SELECT rowid_ as id,gift_id,name,image,price,status FROM inventory WHERE user_id=? AND status IN ('won','withdraw_pending')", (uid,))]
-
-
-class SellIn(BaseModel):
-    prize_id: int = 0
-
-
-@app.post("/api/sell")
-async def sell(body: SellIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    with db.connect() as c:
-        row = c.execute("SELECT price, gift_id FROM inventory WHERE rowid_=? AND user_id=?", (body.prize_id, uid)).fetchone()
-        if not row:
-            raise HTTPException(400, detail={"code": "not_sellable"})
-        cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND user_id=? AND status IN ('won','withdraw_pending')",
-                        (body.prize_id, uid))
-        if cur.rowcount != 1:
-            raise HTTPException(400, detail={"code": "not_sellable"})
-        c.execute("UPDATE gift_queue SET status='cancelled' WHERE inv_row=? AND status='manual'", (body.prize_id,))
-    payout = _sell_value(row["gift_id"], row["price"])
-    bal = db.add_coins(uid, payout)
-    db.ledger(0, payout)
-    return {"payout_ton": payout, "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
-
-
-@app.post("/api/sell_all")
-async def sell_all(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    total, n = 0.0, 0
-    with db.connect() as c:
-        rows = c.execute("SELECT rowid_ AS id, price, gift_id FROM inventory WHERE user_id=? AND status='won'", (uid,)).fetchall()
-        for r in rows:
-            cur = c.execute("UPDATE inventory SET status='sold' WHERE rowid_=? AND status='won'", (r["id"],))
-            if cur.rowcount == 1:
-                total += _sell_value(r["gift_id"], r["price"])
-                n += 1
-    bal = db.add_coins(uid, total) if total else db.get_coins(uid)
-    if total:
-        db.ledger(0, total)
-    return {"count": n, "payout_ton": round(total, 2), "balance_ton": bal, "hatcoin_balance": 0, "prizes": _my_prizes(uid)}
-
-
-REF_APP_LINK = os.getenv("REF_APP_LINK", "https://staticgram.top/winlinebot/winline").rstrip("/")
-
-
-def referral_view(uid: int) -> dict:
-    base = REF_APP_LINK
-    bot_base = base.rsplit("/", 1)[0] if base.count("/") > 3 else base
-    return {"percent": db.limit("ref_percent"), "code": db.code_of(uid), "code_enabled": True,
-            "code_uses": db.ref_count(uid), "code_benefits": {}, "created": True,
-            "link": f"{base}?startapp=ref{uid}", "bot_link": f"{bot_base}?start=ref{uid}",
-            "count": db.ref_count(uid), "earned_ton": float(db.kv_get(uid, "ref_earned", 0) or 0),
-            "balance_ton": float(db.kv_get(uid, "ref_balance", 0) or 0), "min_withdraw_ton": 1, "pending_ton": 0}
-
-
-def build_state(uid: int) -> dict:
-    turn = db.turnover(uid)
-    weapons = ["staff"] + (["skeleton"] if turn >= 30000 else [])
-    st = available_stock()
-    with db.connect() as c:
-        prizes = [_prize_view(dict(r)) for r in c.execute(
-            "SELECT rowid_ as id,gift_id,name,image,price,status FROM inventory WHERE user_id=? AND status IN ('won','withdraw_pending')", (uid,))]
-        rnd = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
-        wd = c.execute("SELECT COUNT(*), COALESCE(SUM(stars),0) FROM withdrawals WHERE user_id=? AND status IN ('ok','sent','done')", (uid,)).fetchone()
-    chest_round = None
-    if rnd:
-        chest_round = {"empties": int(rnd["empties"]), "bet": float(rnd["bet"]), "opened": json.loads(rnd["opened"] or "[]"),
-                       "mult": float(rnd["mult"] or 1), "cells": CELLS}
-    gift_upgrade = os.getenv("GIFT_UPGRADE", "auto").lower()
-    gifts_on = (len(st) > 0) if gift_upgrade == "auto" else gift_upgrade in ("1", "true", "yes")
-    random_tier = {"chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника", "value_ton": HAT_VALUE}
-    tour = db.kv_get(uid, "tour_sections", None)
-    if tour is None:       # лавка пока закрыта — обучение не показываем
-        tour = ["welcome", "shop", "achievements", "quests"]
-    base = db.limit("level_base")
-    need = lambda lv: int(base * (lv - 1) ** 1.6)
-    lvl = 1
-    while lvl < 60 and turn >= need(lvl + 1):
-        lvl += 1
-    lv = {"level": lvl, "max": lvl >= 60, "turnover_ton": turn, "next_ton": need(min(lvl + 1, 60)),
-          "progress": 1.0 if lvl >= 60 else (turn - need(lvl)) / max(1, need(lvl + 1) - need(lvl))}
+        mod = False
     return {
-        "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "free_spin_coins": 0,
-        "user": {"id": uid, "username": ""}, "weapons": weapons, "permanent_weapons": weapons,
-        "prizes": prizes, "chest_round": chest_round,
-        "config": {
-            "chance_min": 0.05, "chance_max": 0.70,
-            "sections": {"upgrade": True, "chests": True, "leaders": False, "staking": False},
-            "gift_upgrade": gifts_on and db.limit("upg_nft_on") >= 1, "tier_enabled": False,
-            "upgrade_modes": {"nft": db.limit("upg_nft_on") >= 1, "stars": db.limit("upg_stars_on") >= 1},
-            "stars_upgrade": {"min": db.limit("bet_min"), "max": db.limit("stars_up_max"), "max_win": db.limit("stars_up_max"), "edge": db.limit("stars_up_edge") / 100.0,
-                              "min_mult": 1.1, "max_mult": 15, "mults": [2, 5, 10, 15]},
-            "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
-            "tiers": {"random": random_tier},
-            "min_bet": db.limit("bet_min"), "max_bet": db.limit("bet_max"), "min_deposit_ton": db.limit("deposit_min"),
-            "stars_deposit": {"enabled": bool(BOT_TOKEN), "per_ton": STARS_PER_COIN, "min_ton": db.limit("deposit_min"),
-                              "max_ton": db.limit("deposit_max"), "lock_days": 0, "presets": [1000, 5000, 10000]},
-            "withdraw": {"min": db.limit("withdraw_min"), "max": db.limit("withdraw_max"), "daily": db.limit("withdraw_daily")},
-            "chests": {"min_bet": db.limit("bet_min"), "max_bet": db.limit("bet_max"), "ladder": _ladder()},
-            "ui_texts": {},
-        },
-        "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
-                  "games": db.count_games(uid), "best": db.best_drop(uid)},
-        "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
-        "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
-        "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
-        "referral": referral_view(uid), "is_admin": db.is_admin(uid), "halloween_enabled": os.getenv("HALLOWEEN_ENABLED", "1") == "1",
+        "id": int(uid),
+        "username": u.get("username") or "",
+        "first_name": u.get("first_name") or "",
+        "photo_url": u.get("photo_url") or "",
+        "balance": int(u.get("balance") or 0),
+        "wager": int(u.get("wager") or 0),
+        "deposited": int(u.get("deposited") or 0),
+        "is_admin": bool(admin),
+        "is_owner": bool(owner),
+        "is_moderator": bool(mod),
     }
 
 
-class TourIn(BaseModel):
-    sections: list = []
+def change_balance(uid: int, delta: int, reason: str = "") -> int:
+    db.ensure_user(uid)
+    u = db.get_users()
+    if not isinstance(u, dict):
+        u = {}
+    k = str(uid)
+    if k not in u or not isinstance(u.get(k), dict):
+        db.ensure_user(uid)
+        u = db.get_users()
+    bal = int(u[k].get("balance") or 0) + int(delta)
+    if bal < 0:
+        raise ValueError("insufficient")
+    u[k]["balance"] = bal
+    if delta < 0:
+        u[k]["wager"] = int(u[k].get("wager") or 0) + abs(delta)
+    db.save_users(u)
+    if reason:
+        try:
+            db.add_history({"uid": uid, "type": "balance", "delta": delta, "reason": reason, "bal": bal})
+        except Exception:
+            pass
+    return bal
 
 
-@app.post("/api/tour/complete")
-async def tour_complete(body: TourIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    seen = set(db.kv_get(uid, "tour_sections", []) or [])
-    seen.update(str(x) for x in (body.sections or []))
-    seen.add("welcome")
-    db.kv_set(uid, "tour_sections", sorted(seen))
-    return {"tour_sections": sorted(seen), "tour_done": True}
+# ---------- AUTH (simple: tg id header from webapp) ----------
+def require_uid(x_uid: Optional[str] = None, q_uid: Optional[str] = None) -> int:
+    raw = x_uid or q_uid
+    if not raw:
+        raise HTTPException(401, "no uid — открой из Telegram")
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        raise HTTPException(401, "bad uid")
 
 
-@app.post("/api/state/personal-boss")
-async def personal_boss_state(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {}
+# множители: индекс = число открытых клеток (режимы 3/5/8)
+MINES_MULT = {
+    3: [1.0, 1.12, 1.28, 1.47, 1.7, 2.0, 2.35, 2.8, 3.4, 4.2, 5.2, 6.5, 8.2, 10.5, 13.5, 17.5, 23.0, 30.0, 40.0, 55.0, 75.0, 100.0],
+    5: [1.0, 1.2, 1.45, 1.8, 2.25, 2.9, 3.7, 4.8, 6.3, 8.4, 11.5, 15.5, 21.0, 29.0, 40.0, 56.0, 80.0, 115.0, 170.0, 250.0],
+    8: [1.0, 1.35, 1.85, 2.6, 3.7, 5.3, 7.8, 11.5, 17.5, 27.0, 42.0, 65.0, 105.0, 170.0, 280.0, 480.0, 850.0],
+}
+# бомбы не раскладываются заранее: на каждом open сервер «подставляет» с завышенным шансом
+MINES_HOUSE = 1.45  # x к честному шансу бомбы на клетке
 
 
-@app.post("/api/spin")
-async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    if db.limit("upg_nft_on") < 1:
-        raise HTTPException(400, detail={"code": "upgrade_closed", "message": "Апгрейд на подарки сейчас закрыт"})
-    show = max(0.01, min(0.70, float(body.chance)))
-    st = available_stock()
-    prize = 0.0
-    meta = None
-    show = round(show, 2)
-    if body.tier == "gift" and body.gift:
-        meta = next((x for x in st if str(x.get("id")) == str(body.gift)), None)
-        prize = float((meta or {}).get("price") or 0)
-    if body.tier == "gift" and body.gift:
-        if not prize:
-            raise HTTPException(400, detail={"code": "gift_unavailable"})
-        cost = round(prize * show / (1 - GIFT_MARGIN), 2)      # цену диктует сервер (та же формула, что у фронта)
+# ---------- API models ----------
+class BetIn(BaseModel):
+    amount: int
+
+
+class MinesStart(BaseModel):
+    amount: int
+    mines: int  # 3,5,8
+
+
+class MinesOpen(BaseModel):
+    cell: int
+
+
+class ArenaJoin(BaseModel):
+    amount: int = 0
+    gift_id: Optional[str] = None
+
+
+class UpgradeIn(BaseModel):
+    amount: int
+    mult: int  # 2, 5, 10
+
+
+class CheckCreate(BaseModel):
+    amount: int
+    uses: int = 1  # сколько раз можно активировать (1 = одноразовый)
+
+
+class CheckActivate(BaseModel):
+    code: str
+
+
+class GiftSell(BaseModel):
+    gift_id: str
+
+
+class GiftWithdraw(BaseModel):
+    gift_id: str
+
+
+class StarsWithdraw(BaseModel):
+    amount: int
+
+
+class AdminGive(BaseModel):
+    user: Optional[str] = None  # @username или id
+    uid: Optional[int] = None
+    amount: int = 0
+
+
+class AdminGift(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None
+    link: str = ""
+    price: int = 0
+    title: str = "Gift"
+
+
+class AdminOdds(BaseModel):
+    slot_777: Optional[float] = None
+    slot_triple: Optional[float] = None
+
+
+class AdminForce(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None  # None = clear
+
+
+class AdminOwner2(BaseModel):
+    user: Optional[str] = None
+    uid: Optional[int] = None
+
+
+def resolve_target(body) -> int:
+    """user (@ник / id) или uid → int id."""
+    ref = getattr(body, "user", None) or ""
+    if not ref and getattr(body, "uid", None) is not None:
+        ref = str(body.uid)
+    ref = str(ref or "").strip()
+    if not ref:
+        raise HTTPException(400, "укажи @username или id")
+    tid = db.parse_user_ref(ref)
+    if not tid:
+        raise HTTPException(404, "игрок не найден: " + ref + " (должен зайти в аппку хоть раз)")
+    return int(tid)
+
+
+
+class AdminTakeGift(BaseModel):
+    uid: int
+    gift_id: str
+
+
+class ConfirmDep(BaseModel):
+    note: str = ""
+
+
+# ---------- routes static ----------
+@app.get("/")
+async def index():
+    return FileResponse(
+        os.path.join(STATIC, "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/api/health")
+async def api_health():
+    return {"ok": True}
+
+
+@app.get("/api/me")
+async def api_me(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None, alias="X-Telegram-Id"),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        h2 = (
+            request.headers.get("x-telegram-id")
+            or request.headers.get("X-Telegram-Id")
+            or request.headers.get("x-telegram-userid")
+        )
+        uid = require_uid(x_telegram_id or h2, tg_id)
+        un = (request.query_params.get("username") or "").lstrip("@")
+        first = request.query_params.get("first_name") or ""
+        photo = request.query_params.get("photo_url") or ""
+        db.ensure_user(uid, un or first or "")
+        users = db.get_users()
+        k = str(uid)
+        if k in users:
+            if un:
+                users[k]["username"] = un.lower()
+            if first:
+                users[k]["first_name"] = first
+            if photo:
+                users[k]["photo_url"] = photo
+            db.save_users(users)
+        return {
+            "user": public_user(uid),
+            "bank": BANK,
+            "min_bet": MIN_BET,
+            "withdraw_fee": WITHDRAW_FEE,
+            "min_withdraw": MIN_WITHDRAW,
+            "mod_give_max": MOD_GIVE_MAX,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("api_me failed")
+        raise HTTPException(500, f"me_error: {type(e).__name__}: {e}")
+
+
+@app.get("/api/history")
+async def api_history(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    h = [x for x in db.get_history() if int(x.get("uid", 0)) == uid][:50]
+    return {"history": h}
+
+
+@app.get("/api/top")
+async def api_top(x_telegram_id: Optional[str] = Header(None)):
+    require_uid(x_telegram_id)
+    users = db.get_users()
+    rows = sorted(
+        [{"uid": k, **v} for k, v in users.items()],
+        key=lambda x: int(x.get("deposited") or 0),
+        reverse=True,
+    )
+    s = db.get_settings()
+    return {
+        "top": [
+            {
+                "username": r.get("username"),
+                "deposited": int(r.get("deposited") or 0),
+                "wager": int(r.get("wager") or 0),
+            }
+            for r in rows[:30]
+        ],
+        "prizes": s.get("top_prizes") or [],
+    }
+
+
+# ---------- SLOTS 777 ----------
+@app.post("/api/slots/spin")
+async def slots_spin(body: BetIn, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    try:
+        change_balance(uid, -amount, "slots_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+
+    st = db.get_settings()
+    p777 = float(st.get("slot_777") or 0.006)  # редко, казино в плюсе
+    # фрукты чуть чаще; 777 редко
+    pool = ["🍒", "🍒", "🍒", "🍒", "🍋", "🍋", "🍋", "🔔", "🔔", "⭐", "⭐", "💎", "7️⃣"]
+    fruits = ["🍒", "🍋", "🔔", "⭐", "💎"]
+    r = random.random()
+
+    if r < p777:
+        reels = ["7️⃣", "7️⃣", "7️⃣"]
+        mult = 10
+    elif r < p777 + 0.09:
+        sym = random.choice(fruits)
+        reels = [sym, sym, sym]
+        mult = 3
+    elif r < p777 + 0.09 + 0.22:
+        sym = random.choice(fruits)
+        other = random.choice([x for x in pool if x != sym])
+        reels = [sym, sym, other]
+        mult = 1.5
+    elif r < p777 + 0.09 + 0.22 + 0.14:
+        sym = random.choice(fruits)
+        mid = random.choice([x for x in fruits if x != sym])
+        reels = [sym, mid, sym]
+        mult = 1.2
     else:
-        cost = round(HAT_VALUE * show, 2)
-    if not (cost == cost) or cost < db.limit("bet_min") or cost > db.limit("bet_max"):
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
-    # Показываем show (например 50%), крутим real ниже (≈45%).
-    # Срез 4–8 п.п.: больше шанс и ставка — чуть жёстче (как в старом казике).
-    cut = 0.04 + 0.03 * (show / 0.70)          # ~4% при малых, ~7% при 70%
-    if cost >= 500:
-        cut += 0.01
-    if cost >= 2000:
-        cut += 0.01
-    cut = min(0.08, cut)
-    real = max(0.01, round(show - cut, 4))
-    if not db.spend(uid, cost):
-        raise HTTPException(400, detail={"code": "insufficient_funds"})
-    win = random.SystemRandom().random() < real
-    db.streak_update(uid, win)
-    gift_row = None
-    payout = 0.0
-    if win and body.tier == "gift" and body.gift:
-        payout = prize or cost / show
-        with db.connect() as c:
-            c.execute(
-                "INSERT INTO inventory(user_id,gift_id,name,image,price,status) VALUES(?,?,?,?,?,?)",
-                (uid, str(body.gift), (meta or {}).get("name") or body.gift, (meta or {}).get("image") or "", payout, "won"),
-            )
-        gift_row = {"id": body.gift, "name": (meta or {}).get("name"), "price": payout}
-    elif win:
-        payout = _sell_value("hat", HAT_VALUE)           # шляпа попадает в «Мои призы», продать её можно за монеты
-        with db.connect() as c:
-            c.execute("INSERT INTO inventory(user_id,gift_id,name,image,price,status) VALUES(?,?,?,?,?,?)",
-                      (uid, "hat", "Шляпа волшебника", "/images/hat.png", HAT_VALUE, "won"))
-        gift_row = {"id": "hat", "name": "Шляпа волшебника", "price": HAT_VALUE, "image": "/images/hat.png"}
-    db.ledger(cost, payout if win else 0)
-    db.add_turnover(uid, cost)
-    db.log_game(uid, "upgrade", win, cost, payout if win else 0,
-                target=(gift_row or {}).get("name") or "", image=(gift_row or {}).get("image") or "", chance=show)
-    return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "win": win, "chance": show, "cost_ton": cost, "gift": gift_row}
+        a = random.choice(pool)
+        b = random.choice(pool)
+        c = random.choice(pool)
+        if a == b == c:
+            c = random.choice([x for x in fruits if x != a] or fruits)
+        if a == "7️⃣" and b == "7️⃣" and c == "7️⃣":
+            c = "🍒"
+        reels = [a, b, c]
+        mult = 0
 
-def _mult(opened, empties):
-    return _mult_at(int(empties), int(opened)) if opened > 0 else 1.0
-
-@app.post("/api/chests/start")
-async def chests_start(body: ChestStart, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    bet, empties = float(body.bet), int(body.empties)
-    if not (bet == bet) or bet < db.limit("bet_min") or bet > db.limit("bet_max"):
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
-    if empties not in CX_CHOICES:
-        raise HTTPException(400, detail={"code": "bad_empties"})
-    if not db.spend(uid, bet): raise HTTPException(400, detail={"code": "insufficient_funds"})
-    bad = sorted(random.sample(range(CELLS), min(empties, CELLS-1)))
-    with db.connect() as c:                          # новый раунд только если нет идущего
-        cur = c.execute("""INSERT INTO chest_rounds(user_id,bet,empties,bad,opened,mult,active,created)
-                     VALUES(?,?,?,?,?,?,1,?)
-                     ON CONFLICT(user_id) DO UPDATE SET bet=excluded.bet,empties=excluded.empties,
-                     bad=excluded.bad,opened='[]',mult=1,active=1,created=excluded.created
-                     WHERE chest_rounds.active=0""",
-                  (uid, bet, empties, json.dumps(bad), "[]", 1.0, int(time.time())))
-        started = cur.rowcount == 1
-        if not started:
-            c.execute("UPDATE users SET coins=coins+? WHERE id=?", (bet, uid))     # раунд уже идёт — ставку возвращаем
-    if not started:
-        raise HTTPException(409, detail={"code": "round_active", "message": "Сначала закончи текущий раунд"})
-    db.add_turnover(uid, bet)
-    db.ledger(bet, 0)
-    return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0,
-            "round": {"empties": empties, "bet": bet, "opened": [], "mult": 1.0, "cells": CELLS}}
-
-@app.post("/api/chests/open")
-async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    cell = int(body.cell)
-    with db.connect() as c:
-        row = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
-        if not row: raise HTTPException(400, detail={"code": "no_round"})
-        opened = json.loads(row["opened"] or "[]")
-        bad = json.loads(row["bad"] or "[]")
-        if cell in opened: raise HTTPException(400, "already")
-        is_bomb = cell in bad
-        if is_bomb:
-            if cell not in bad: bad.append(cell)
-            opened.append(cell)
-            c.execute("UPDATE chest_rounds SET active=0,opened=?,bad=? WHERE user_id=?",
-                      (json.dumps(opened), json.dumps(bad), uid))
-            c.execute("INSERT INTO spin_log(user_id,chance,cost,win,created,kind,target,image,payout) VALUES(?,?,?,?,?,?,?,?,?)",
-                      (uid, 0, float(row["bet"]), 0, int(time.time()), "chests", "Кладбище", "", 0))
-            bal = float(c.execute("SELECT coins FROM users WHERE id=?", (uid,)).fetchone()["coins"])   # тот же коннект: иначе "database is locked"
-            return {"finished": True, "balance_ton": bal, "hatcoin_balance": 0, "safe": False, "win": False, "cell": cell,
-                    "bad": bad, "opened": opened, "mult": 0, "payout_ton": 0}
-        opened.append(cell)
-        db.kv_set(uid, "mines_opened", int(db.kv_get(uid, "mines_opened", 0) or 0) + 1)
-        empties = int(row["empties"])
-        mult = _mult(len(opened), empties)
-        bet = float(row["bet"])
-        done = len(opened) >= CELLS - empties          # открыты все безопасные клетки — забираем автоматически
-        c.execute("UPDATE chest_rounds SET opened=?,mult=?,active=? WHERE user_id=?", (json.dumps(opened), mult, 0 if done else 1, uid))
-        payout = round(bet * mult, 4) if done else 0
-        if done:
-            c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
-    if done:
-        db.ledger(0, payout)
-        db.log_game(uid, "chests", True, bet, payout, target="Кладбище x%.2f" % mult)
-        return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True, "cell": cell,
-                "bad": bad, "opened": opened, "mult": mult, "payout_ton": payout}
-    return {"finished": False, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "cell": cell, "mult": mult,
-            "round": {"empties": empties, "bet": bet, "opened": opened, "mult": mult, "cells": CELLS}}
-
-@app.post("/api/chests/cashout")
-async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    with db.connect() as c:
-        row = c.execute("SELECT * FROM chest_rounds WHERE user_id=? AND active=1", (uid,)).fetchone()
-        if not row: raise HTTPException(400, detail={"code": "no_round"})
-        opened = json.loads(row["opened"] or "[]")
-        bad = json.loads(row["bad"] or "[]")
-        if not opened: raise HTTPException(400, "open first")
-        mult = float(row["mult"] or 1)
-        payout = round(float(row["bet"]) * mult, 4)
-        cur = c.execute("UPDATE chest_rounds SET active=0 WHERE user_id=? AND active=1", (uid,))
-        if cur.rowcount != 1:                    # второй параллельный cashout — выплаты нет
-            raise HTTPException(400, detail={"code": "no_round"})
-        c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
-    db.ledger(0, payout)
-    db.log_game(uid, "chests", True, float(row["bet"]), payout, target="Кладбище x%.2f" % mult)
-    return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True,
-            "payout_ton": payout, "mult": mult, "opened": opened, "bad": bad}
-
-class StarsUpIn(BaseModel):
-    amount: float = 0
-    mult: float = 2
-
-
-STARS_UP_MIN_MULT, STARS_UP_MAX_MULT = 1.1, 15.0
-
-
-@app.post("/api/upgrade/stars")
-async def stars_upgrade(body: StarsUpIn, request: Request, x_init_data: str | None = Header(None)):
-    """Апгрейд звёзд: выигрыш за раз не больше stars_up_max, множитель 1.1–15. Шанс = (1 − комиссия) / множитель, выплата = ставка × множитель."""
-    uid = uid_from(request, x_init_data)
-    if db.limit("upg_stars_on") < 1:
-        raise HTTPException(400, detail={"code": "upgrade_closed", "message": "Апгрейд звёзд сейчас закрыт"})
-    amount, mult = float(body.amount), float(body.mult)
-    lo, cap = db.limit("bet_min"), db.limit("stars_up_max")           # cap — максимум, который можно выиграть за один раз
-    if not (STARS_UP_MIN_MULT <= mult <= STARS_UP_MAX_MULT):
-        raise HTTPException(400, detail={"code": "bad_mult", "message": f"Множитель от {STARS_UP_MIN_MULT:g} до {STARS_UP_MAX_MULT:g}x"})
-    mult = round(mult, 2)
-    hi = math.floor(cap / mult * 100) / 100                            # ставка × множитель не больше cap
-    if not (amount == amount) or amount < lo or amount > hi:
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": lo, "max_ton": hi,
-                                         "message": f"Ставка от {lo:g} до {hi:g} ★ при x{mult:g} (выигрыш за раз не больше {cap:g} ★)"})
-    amount = round(amount, 2)
-    edge = min(0.5, max(0.0, db.limit("stars_up_edge") / 100.0))
-    chance = round((1 - edge) / mult, 4)
-    if not db.spend(uid, amount):
-        raise HTTPException(400, detail={"code": "insufficient_funds"})
-    win = random.SystemRandom().random() < chance
-    payout = min(round(amount * mult, 2), cap) if win else 0.0
+    win = int(amount * mult) if mult else 0
     if win:
-        db.add_coins(uid, payout)
-    db.ledger(amount, payout)
-    db.add_turnover(uid, amount)
-    db.log_game(uid, "stars", win, amount, payout, target=f"★ x{mult:g}", image="/images/star-px.png", chance=chance)
-    return {"win": win, "mult": mult, "bet": amount, "payout": payout, "chance": chance, "balance_ton": db.get_coins(uid)}
+        change_balance(uid, win, "slots_win")
+    db.add_history({"uid": uid, "type": "slots", "bet": amount, "reels": reels, "mult": mult, "win": win})
+    return {"reels": reels, "mult": mult, "win": win, "balance": public_user(uid)["balance"]}
+
+
+
+@app.post("/api/mines/start")
+async def mines_start(
+    body: MinesStart,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    mines_n = int(body.mines)
+    if mines_n not in (3, 5, 8):
+        raise HTTPException(400, "mines 3/5/8")
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > 500:
+        raise HTTPException(400, "макс ставка в минах 500★")
+    try:
+        change_balance(uid, -amount, "mines_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+
+    cells = 25
+    # бомбы НЕ загадываем заранее — решаем при каждом open (чаще, чем честно)
+    games = db.get_mines()
+    games[str(uid)] = {
+        "bet": amount,
+        "mines": mines_n,
+        "bombs": [],
+        "opened": [],
+        "alive": True,
+        "step": 0,
+        "dynamic": True,
+    }
+    db.save_mines(games)
+    return {"ok": True, "cells": cells, "mines": mines_n, "balance": public_user(uid)["balance"]}
+
+
+@app.post("/api/mines/open")
+async def mines_open(
+    body: MinesOpen,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+        games = db.get_mines()
+        if not isinstance(games, dict):
+            games = {}
+        g = games.get(str(uid))
+        if not isinstance(g, dict) or not g.get("alive"):
+            raise HTTPException(400, "нет активной игры — нажми Начать")
+        cell = int(body.cell)
+        opened = [int(x) for x in (g.get("opened") or [])]
+        bombs = [int(x) for x in (g.get("bombs") or [])]
+        if cell in opened:
+            raise HTTPException(400, "уже открыто")
+        cells = 25
+        mines_n = int(g.get("mines") or 3)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
+
+        # динамическая бомба: шанс выше честного mines/осталось
+        left_cells = cells - len(opened)  # включая текущую
+        if left_cells < 1:
+            left_cells = 1
+        fair = float(mines_n) / float(left_cells)
+        try:
+            house = float(MINES_HOUSE)
+        except Exception:
+            house = 1.45
+        p_bomb = min(0.88, fair * house)
+        is_bomb = cell in bombs or (g.get("dynamic") and random.random() < p_bomb)
+
+        if is_bomb:
+            # достраиваем карту бомб для показа
+            bomb_set = set(bombs)
+            bomb_set.add(cell)
+            need = max(0, mines_n - len(bomb_set))
+            pool = [i for i in range(cells) if i not in opened and i != cell and i not in bomb_set]
+            if need and pool:
+                bomb_set.update(random.sample(pool, min(need, len(pool))))
+            bombs = list(bomb_set)
+            g["alive"] = False
+            opened.append(cell)
+            g["opened"] = opened
+            g["bombs"] = bombs
+            games[str(uid)] = g
+            db.save_mines(games)
+            try:
+                db.add_history({"uid": uid, "type": "mines", "bet": g.get("bet"), "win": 0, "bust": True})
+            except Exception:
+                pass
+            return {
+                "bust": True,
+                "cell": cell,
+                "bombs": bombs,
+                "balance": public_user(uid)["balance"],
+            }
+
+        opened.append(cell)
+        g["opened"] = opened
+        g["bombs"] = bombs
+        g["step"] = len(opened)
+        games[str(uid)] = g
+        db.save_mines(games)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
+        mults = MINES_MULT[mines_n]
+        step = min(len(opened), len(mults) - 1)
+        mult = float(mults[step])
+        bet = int(g.get("bet") or 0)
+        can_take = int(bet * mult)
+        return {
+            "bust": False,
+            "cell": cell,
+            "step": len(opened),
+            "mult": mult,
+            "can_take": can_take,
+            "bet": bet,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("mines_open")
+        raise HTTPException(500, "mines_open: " + str(e)[:120])
+
+
+@app.post("/api/mines/cashout")
+async def mines_cashout(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+        games = db.get_mines()
+        if not isinstance(games, dict):
+            games = {}
+        g = games.get(str(uid))
+        if not isinstance(g, dict) or not g.get("alive"):
+            raise HTTPException(400, "нет активной игры")
+        opened = [int(x) for x in (g.get("opened") or [])]
+        if not opened:
+            raise HTTPException(400, "открой хотя бы 1 клетку")
+        mines_n = int(g.get("mines") or 3)
+        if mines_n not in MINES_MULT:
+            mines_n = 3
+        mults = MINES_MULT[mines_n]
+        step = min(len(opened), len(mults) - 1)
+        mult = float(mults[step])
+        bet = int(g.get("bet") or 0)
+        win = int(bet * mult)
+        g["alive"] = False
+        g["opened"] = opened
+        games[str(uid)] = g
+        db.save_mines(games)
+        change_balance(uid, win, "mines_win")
+        try:
+            db.add_history({"uid": uid, "type": "mines", "bet": bet, "win": win, "mult": mult})
+        except Exception:
+            pass
+        return {"win": win, "mult": mult, "balance": public_user(uid)["balance"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("mines_cashout")
+        raise HTTPException(500, "mines_cash: " + str(e)[:120])
+
+
+
+# ---------- UPGRADE (stars only) ----------
+# Исход считает ТОЛЬКО сервер (random). Клиент лишь крутит иглу под win/lose.
+UPGRADE_MAX_BET = 2500
+# База ниже «честной» → казино в плюсе.
+# Клиенту показываем 50/20/10, реально крутим эти %.
+UPGRADE_CHANCE_BASE = {
+    2: 0.40,   # ×2 — 40% (честно 50%)
+    5: 0.08,   # ×5 — 8%  (честно 20%)
+    10: 0.025, # ×10 — 2.5% (честно 10%)
+}
+# Мягкий буст после серии лузов (не форс-вин, edge сохраняется)
+# lose_streak → добавка к шансу (абсолютная)
+UPGRADE_LOSS_BOOST = {
+    2:  {3: 0.03, 4: 0.05, 5: 0.07},   # макс ~47% при 5+ лузах
+    5:  {3: 0.015, 4: 0.025, 5: 0.035}, # макс ~11.5%
+    10: {3: 0.008, 4: 0.012, 5: 0.018}, # макс ~4.3%
+}
+UPGRADE_WIN_STREAK_CAP = 3  # 4-я победа подряд = форс-луз
+
+
+def _upgrade_chance(mult: int, amount: int, lose_streak: int = 0) -> float:
+    base = float(UPGRADE_CHANCE_BASE.get(mult, 0))
+    if amount >= UPGRADE_MAX_BET:
+        if mult == 2:
+            base = 0.38
+        elif mult == 5:
+            base = 0.07
+        elif mult == 10:
+            base = 0.02
+    # soft pity: после 3/4/5 лузов чуть выше шанс, но всегда < fair
+    boosts = UPGRADE_LOSS_BOOST.get(mult) or {}
+    add = 0.0
+    if lose_streak >= 5:
+        add = float(boosts.get(5) or 0)
+    elif lose_streak >= 4:
+        add = float(boosts.get(4) or 0)
+    elif lose_streak >= 3:
+        add = float(boosts.get(3) or 0)
+    # потолок: не выше fair−1% чтобы казик оставался в плюсе
+    fair_cap = {2: 0.49, 5: 0.18, 10: 0.09}.get(mult, 0.45)
+    return min(fair_cap, base + add)
 
 
 @app.post("/api/upgrade")
-async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    amount, mult = float(body.amount), int(body.mult)
-    if mult not in UPGRADE_BASE: raise HTTPException(400, "mult 2/5/10")
-    if not (amount == amount) or amount < db.limit("bet_min") or amount > db.limit("bet_max"):   # отрицательная сумма раньше давала деньги
-        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": db.limit("bet_min"), "max_ton": db.limit("bet_max")})
-    with db.connect() as c:
-        r = c.execute("SELECT upgrade_win_streak,upgrade_lose_streak FROM users WHERE id=?", (uid,)).fetchone()
-        ws, ls = int(r["upgrade_win_streak"] or 0), int(r["upgrade_lose_streak"] or 0)
-    base = UPGRADE_BASE[mult]
-    if amount >= 2500: base = {2:0.46,5:0.13,10:0.04}[mult]
-    add = 0.0
-    for k,v in sorted((UPGRADE_LOSS.get(mult) or {}).items()):
-        if ls >= k: add = v
-    chance = min({2:0.59,5:0.18,10:0.07}[mult], base + add)
-    if not db.spend(uid, amount): raise HTTPException(400, detail={"code": "insufficient_funds"})
-    win = False if ws >= 3 else (random.random() < chance)
-    payout = amount * mult if win else 0
-    if win:
-        db.add_coins(uid, payout); ws, ls = ws+1, 0
+async def api_upgrade(
+    body: UpgradeIn,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    mult = int(body.mult)
+    if mult not in UPGRADE_CHANCE_BASE:
+        raise HTTPException(400, "mult 2/5/10")
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > UPGRADE_MAX_BET:
+        raise HTTPException(400, f"макс ставка в апгрейде {UPGRADE_MAX_BET}★")
+    try:
+        change_balance(uid, -amount, "upgrade_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+
+    users = db.get_users()
+    uk = str(uid)
+    if uk not in users or not isinstance(users.get(uk), dict):
+        db.ensure_user(uid)
+        users = db.get_users()
+    win_streak = int(users[uk].get("upgrade_win_streak") or 0)
+    lose_streak = int(users[uk].get("upgrade_lose_streak") or 0)
+
+    chance = _upgrade_chance(mult, amount, lose_streak)
+    if win_streak >= UPGRADE_WIN_STREAK_CAP:
+        win = False  # не более 3 побед подряд
     else:
-        ws, ls = 0, ls+1
-    with db.connect() as c:
-        c.execute("UPDATE users SET upgrade_win_streak=?,upgrade_lose_streak=? WHERE id=?", (ws, ls, uid))
-    db.ledger(amount, payout)
-    db.add_turnover(uid, amount)
-    return {"win": win, "mult": mult, "bet": amount, "payout": payout, "chance": chance, "balance_ton": db.get_coins(uid)}
+        win = random.random() < chance
 
-# ---------- inventory / withdraw ----------
-@app.api_route("/api/relayer/gifts", methods=["GET", "POST"])
-async def relayer(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    with db.connect() as c:
-        mine = [dict(id=str(r["rowid_"]), name=r["name"], image=r["image"], price=r["price"])
-                for r in c.execute("SELECT * FROM inventory WHERE user_id=? AND status='won'", (uid,))]
-    return {"relayer": {}, "stock": stock(), "mine": mine}
+    payout = int(amount * mult) if win else 0
+    if payout:
+        change_balance(uid, payout, "upgrade_win")
+        win_streak = win_streak + 1
+        lose_streak = 0
+    else:
+        win_streak = 0
+        lose_streak = lose_streak + 1
 
-@app.post("/api/inventory/claim")
-async def claim(body: IdIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    inv_id = int(body.id)
-    st = {str(x["id"]): x for x in stock()}
-    with db.connect() as c:
-        row = c.execute("SELECT * FROM inventory WHERE rowid_=? AND user_id=? AND status='won'", (inv_id, uid)).fetchone()
-        if not row: raise HTTPException(404, "not found")
-        gid = str(row["gift_id"])
-        if int((st.get(gid) or {}).get("count") or 0) < 1:
-            raise HTTPException(409, "Нет на складе релеера, подождите")
-        cur = c.execute("UPDATE inventory SET status='sending' WHERE rowid_=? AND status='won'", (inv_id,))
-        if cur.rowcount != 1: raise HTTPException(409, "already queued")
-        c.execute("INSERT INTO gift_queue(user_id,gift_id,inv_row,status,created) VALUES(?,?,?,'pending',?)",
-                  (uid, gid, inv_id, int(time.time())))
-    return {"ok": True, "queued": True, "message": "В очереди на отправку"}
-
-@app.post("/api/withdraw")
-async def withdraw(body: StarsIn, request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    if getattr(body, "prize_id", 0):                 # фронт зовёт этот же путь для вывода подарка
-        return await prize_withdraw(uid, int(body.prize_id))
-    amount = int(body.stars or 0)
-    wmin, wmax, wday = int(db.limit("withdraw_min")), int(db.limit("withdraw_max")), int(db.limit("withdraw_daily"))
-    if amount < wmin:
-        raise HTTPException(400, detail={"code": "below_min", "message": f"Минимум для вывода — {wmin}★"})
-    if amount > wmax:
-        raise HTTPException(400, detail={"code": "above_max", "message": f"Максимум за один вывод — {wmax}★"})
-    rid = uuid.uuid4().hex
-    with db.connect() as c:
-        since = int(time.time()) - 86400
-        already = c.execute(
-            "SELECT COALESCE(SUM(stars),0) s FROM withdrawals WHERE user_id=? AND status IN ('pending','done') AND created>=?",
-            (uid, since)).fetchone()["s"]
-        if int(already) + amount > wday:
-            raise HTTPException(400, detail={"code": "daily_cap", "message": f"Дневной лимит вывода — {wday}★ (осталось {max(0, wday - int(already))}★)"})
-    if not db.spend(uid, amount):
-        raise HTTPException(400, detail={"code": "insufficient_funds"})
-    with db.connect() as c:
-        c.execute("INSERT INTO withdrawals VALUES(?,?,?,?,?,?)", (rid, uid, amount, "pending", "", int(time.time())))
-    res = await bot_raw("withdrawStarBalance", {"user_id": uid, "star_count": amount, "request_id": rid})
-    ok, err = bool(res.get("ok")), str(res.get("description", ""))
-    with db.connect() as c:
-        c.execute("UPDATE withdrawals SET status=? WHERE request_id=?", ("done" if ok else "failed", rid))
-    if not ok:
-        db.add_coins(uid, amount)
-        print("withdrawStarBalance failed:", err)
-        if "BALANCE_TOO_LOW" in err:
-            await _notify_admins("⚠️ Вывод звёзд игроку не прошёл: на балансе бота не хватает звёзд. Пополни баланс бота.")
-            raise HTTPException(502, detail={"code": "bot_balance", "message": "Вывод временно недоступен, попробуй позже"})
-        if "STAR_WITHDRAWAL_DISABLED" in err:
-            raise HTTPException(502, detail={"code": "withdraw_disabled", "message": "Вывод звёзд сейчас отключён StaticGram"})
-        if "user not found" in err or "USER_FROZEN" in err:
-            raise HTTPException(502, detail={"code": "user_unavailable", "message": "Твой аккаунт не может получить звёзды"})
-        raise HTTPException(502, detail={"code": "withdraw_failed", "message": "Не удалось вывести, попробуй позже"})
-    return {"ok": True, "balance_ton": db.get_coins(uid)}
-
-@app.post("/api/gifts/catalog")
-async def catalog(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    items = [{"slug": str(i.get("id")), "name": i.get("name"), "image": i.get("image"), "price_ton": float(i.get("price") or 0),
-              "price": float(i.get("price") or 0), "count": i.get("count"), "popular": int(i.get("count") or 0)}
-             for i in available_stock()]
-    return {"items": items, "margin": GIFT_MARGIN, "price_steps": [], "price_base": 1}
+    try:
+        users = db.get_users()
+        if uk in users and isinstance(users.get(uk), dict):
+            users[uk]["upgrade_win_streak"] = win_streak
+            users[uk]["upgrade_lose_streak"] = lose_streak
+            db.save_users(users)
+    except Exception:
+        pass
+    try:
+        db.add_history({
+            "uid": uid,
+            "type": "upgrade_win" if win else "upgrade_lose",
+            "bet": amount,
+            "mult": mult,
+            "win": payout,
+            "chance": round(chance, 4),
+            "win_streak": win_streak,
+            "lose_streak": lose_streak,
+        })
+    except Exception:
+        pass
+    return {
+        "win": win,
+        "mult": mult,
+        "bet": amount,
+        "payout": payout,
+        "chance": chance,  # можно оставить — клиент не показывает
+        "balance": public_user(uid)["balance"],
+    }
 
 
-class SlugIn(BaseModel):
-    slug: str = ""
+# ---------- ROCKET (crash) ----------
+# Жёстче в плюс казика: edge ~9%, выплата макс ×5, визуал до ×8
+ROCKET_BETTING_SEC = 5.0
+ROCKET_CRASH_HOLD = 2.2
+ROCKET_PAUSE_SEC = 1.2
+ROCKET_EDGE = 0.09          # базовый edge ~9%
+ROCKET_MAX_PAY = 5.0        # макс выплата игроку
+ROCKET_MAX_SHOW = 8.0       # иногда выше в истории (когда уже все вышли)
+ROCKET_GROWTH_K = 0.07      # плавнее полёт, WebView успевает
 
 
-@app.post("/api/gifts/models")
-async def gift_models(body: SlugIn, request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    g = next((x for x in available_stock() if str(x.get("id")) == str(body.slug)), None)
-    if not g:
-        return {"slug": body.slug, "models": [], "status": "failed"}
-    price = float(g.get("price") or 0)
-    return {"slug": body.slug, "name": g.get("name"), "title": g.get("name"), "image": g.get("image"), "floor": price, "status": "ready",
-            "models": [{"model": g.get("name") or body.slug, "price_ton": price, "image": g.get("image")}]}
+def _rocket_gen_crash(house_pnl: int = 0, bank: int = 0) -> tuple:
+    """
+    ×1.50 не безопасная зона: часть раундов рвётся ДО 1.50 всегда.
+    Если касса в минусе — чаще краш 1.08–1.38, чтобы отыграть.
+    Большой банк живых ставок — чаще около ×2, но тоже с ранними.
+    """
+    # house_pnl: плюс = касса заработала, минус = игроки вынесли
+    lost = house_pnl < 0
+    if house_pnl < -4000:
+        heat = 3
+    elif house_pnl < -1500:
+        heat = 2
+    elif house_pnl < -400:
+        heat = 1
+    else:
+        heat = 0
+
+    big = bank >= 2500
+    huge = bank >= 8000
+
+    r = random.random()
+    # бакеты: 0 ultra-early, 1 до 1.38, 2 вокруг 1.45 (часто НИЖЕ 1.50),
+    #         3 ~x2, 4 mid-high, 5 high
+    if heat >= 3:
+        # касса сильно в минусе — вернуть: чаще до 1.40
+        weights = (0.18, 0.40, 0.26, 0.10, 0.04, 0.02)
+    elif heat >= 2:
+        weights = (0.14, 0.36, 0.28, 0.14, 0.05, 0.03)
+    elif heat >= 1:
+        weights = (0.10, 0.32, 0.30, 0.16, 0.08, 0.04)
+    elif huge:
+        # жирный банк: много до 1.45 + пачка около ×2
+        weights = (0.10, 0.24, 0.22, 0.32, 0.08, 0.04)
+    elif big:
+        weights = (0.08, 0.22, 0.24, 0.28, 0.12, 0.06)
+    else:
+        # обычный — тоже не «всегда 1.50»: ~30%+ рвётся раньше
+        weights = (0.08, 0.22, 0.28, 0.20, 0.12, 0.10)
+
+    acc = 0.0
+    bucket = 5
+    for i, w in enumerate(weights):
+        acc += w
+        if r < acc:
+            bucket = i
+            break
+
+    def rnd(a, b):
+        return a + random.random() * (b - a)
+
+    if bucket == 0:
+        crash = rnd(1.06, 1.16)
+    elif bucket == 1:
+        crash = rnd(1.16, 1.38)  # не дотягивает до 1.50
+    elif bucket == 2:
+        # специально рвём И до, И чуть после 1.50 — паттерн «забирай 1.5» ломается
+        pick = random.random()
+        if lost or heat:
+            if pick < 0.62:
+                crash = rnd(1.32, 1.47)  # не успели на 1.50
+            elif pick < 0.85:
+                crash = rnd(1.50, 1.62)
+            else:
+                crash = rnd(1.62, 1.78)
+        else:
+            if pick < 0.45:
+                crash = rnd(1.32, 1.47)
+            elif pick < 0.72:
+                crash = rnd(1.50, 1.62)
+            else:
+                crash = rnd(1.62, 1.80)
+    elif bucket == 3:
+        crash = rnd(1.82, 2.18)
+    elif bucket == 4:
+        crash = rnd(2.20, 3.40)
+    else:
+        crash = rnd(3.40, ROCKET_MAX_PAY)
+
+    crash = max(1.0, min(float(crash), ROCKET_MAX_SHOW))
+    crash_pay = min(crash, ROCKET_MAX_PAY)
+
+    # визуал выше для ленты (редко)
+    if crash_pay >= 3.0 and random.random() < 0.22:
+        display = min(ROCKET_MAX_SHOW, crash_pay + random.uniform(0.6, 2.5))
+    else:
+        display = crash_pay
+
+    display = max(display, crash_pay)
+    crash_pay = round(crash_pay, 2)
+    display = round(display, 2)
+    return crash_pay, display
 
 
-# ---------- ЗАГЛУШКИ: пути, которые зовёт фронт, но настоящей логики пока нет ----------
-# Возвращают пустые данные, чтобы мини-аппка не падала с «Нет связи с сервером».
-# Когда будешь писать настоящую логику — заменяй заглушку на нормальный обработчик.
-@app.post("/api/quests")
-async def quests_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {"enabled": True, "rows": [], "server_time": int(time.time())}
+def _rocket_mult_at(t: float) -> float:
+    """Current multiplier at t seconds after fly start."""
+    if t <= 0:
+        return 1.0
+    return round(math.exp(ROCKET_GROWTH_K * t), 2)
 
-@app.post("/api/shop")
-async def shop_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return {"offers": [], "balance_ton": db.get_coins(uid), "hatcoin_balance": 0}
 
-@app.post("/api/history")
-async def history_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid = uid_from(request, x_init_data)
-    return {"rows": db.history(uid, 50)}
+def _rocket_time_to_mult(mult: float) -> float:
+    if mult <= 1.0:
+        return 0.0
+    return math.log(mult) / ROCKET_GROWTH_K
 
-@app.post("/api/leaderboard")
-async def leaderboard_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    now = int(time.time())
-    return {"since": now, "now": now, "ends": now, "season": "", "alltime": True,
-            "endless": True, "finished": False, "me": {"rank": None, "excluded": False}, "rows": []}
 
-@app.post("/api/wallet")
-async def wallet_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
+def _rocket_public(r: dict, uid: int = 0) -> dict:
+    now = time.time()
+    status = r.get("status") or "betting"
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    fly_started = float(r.get("fly_started_at") or 0)
+    betting_ends = float(r.get("betting_ends_at") or 0)
+
+    mult = 1.0
+    if status == "flying" and fly_started > 0:
+        t = max(0.0, now - fly_started)
+        mult = _rocket_mult_at(t)
+        # don't reveal past crash to client during fly — clamp display
+        if mult >= display_crash:
+            mult = display_crash
+    elif status == "crashed":
+        mult = display_crash
+
+    players = []
+    my_bet = None
+    for pid, p in (r.get("bets") or {}).items():
+        if not isinstance(p, dict):
+            continue
+        row = {
+            "uid": int(pid) if str(pid).isdigit() else pid,
+            "username": p.get("username") or ("ID " + str(pid)),
+            "amount": int(p.get("amount") or 0),
+            "cashed": bool(p.get("cashed")),
+            "cashout_mult": p.get("cashout_mult"),
+        }
+        players.append(row)
+        if uid and str(pid) == str(uid):
+            my_bet = row
+    players.sort(key=lambda x: -x["amount"])
+
+    left = 0.0
+    if status == "betting":
+        left = max(0.0, betting_ends - now)
+
+    return {
+        "status": status,
+        "round_id": int(r.get("round_id") or 0),
+        "mult": mult,
+        "countdown": round(left, 2),
+        "history": (r.get("history") or [])[:24],
+        "players": players[:40],
+        "my_bet": my_bet,
+        "server_now": now,
+        "fly_started_at": fly_started,
+        "crash_at": display_crash if status == "crashed" else None,
+    }
+
+
+def _rocket_start_betting(r: dict) -> dict:
+    now = time.time()
+    r["status"] = "betting"
+    r["round_id"] = int(r.get("round_id") or 0) + 1
+    r["betting_ends_at"] = now + ROCKET_BETTING_SEC
+    r["fly_started_at"] = 0.0
+    r["bets"] = {}
+    r["_all_cashed_boost"] = False
+    # pre-roll (пересчитаем при старте полёта с учётом банка)
+    pnl = int(r.get("house_pnl") or 0)
+    crash_pay, display = _rocket_gen_crash(pnl, bank=0)
+    r["crash_at"] = crash_pay
+    r["display_crash"] = display
+    r["seed"] = db.new_id()
+    return r
+
+
+def _rocket_tick() -> None:
+    """Advance rocket round state machine. Called from background loop."""
+    try:
+        r = db.get_rocket()
+        now = time.time()
+        status = r.get("status") or "betting"
+
+        if status == "betting":
+            ends = float(r.get("betting_ends_at") or 0)
+            if ends <= 0:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+            # safety: stuck past end by >30s → force new round
+            if now - ends > 30:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+            if now >= ends:
+                r["status"] = "flying"
+                r["fly_started_at"] = now
+                bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+                bank = 0
+                for p in bets.values():
+                    if isinstance(p, dict):
+                        bank += int(p.get("amount") or 0)
+                pnl = int(r.get("house_pnl") or 0)
+                # пересчёт краша с учётом банка: большой банк → чаще ×2
+                crash_pay, display = _rocket_gen_crash(pnl, bank=bank)
+                if not bets:
+                    # пустой раунд — для визуала можно улететь далеко
+                    if random.random() < 0.55:
+                        display = round(random.uniform(3.5, ROCKET_MAX_SHOW), 2)
+                        crash_pay = min(display, ROCKET_MAX_PAY)
+                    else:
+                        display = crash_pay
+                r["crash_at"] = round(float(crash_pay), 2)
+                r["display_crash"] = round(float(display), 2)
+                r["_all_cashed_boost"] = False
+                db.save_rocket(r)
+                return
+
+        elif status == "flying":
+            fly_started = float(r.get("fly_started_at") or 0)
+            if fly_started <= 0:
+                r["fly_started_at"] = now
+                db.save_rocket(r)
+                return
+            display_crash = float(r.get("display_crash") or 1.0)
+            t = max(0.0, now - fly_started)
+            mult = _rocket_mult_at(t)
+            # все забрали — для визуала можно улететь дальше (1 раз)
+            if not r.get("_all_cashed_boost"):
+                bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+                if bets and all(isinstance(p, dict) and p.get("cashed") for p in bets.values()):
+                    r["_all_cashed_boost"] = True
+                    extra = random.uniform(1.5, 4.0)
+                    new_d = min(ROCKET_MAX_SHOW, max(display_crash, mult + extra))
+                    r["display_crash"] = round(new_d, 2)
+                    display_crash = new_d
+                    db.save_rocket(r)
+            # safety: flying > 60s → force crash
+            force = t > 60
+            if mult >= display_crash or force:
+                if force:
+                    display_crash = min(display_crash, max(1.0, mult))
+                    r["display_crash"] = round(display_crash, 2)
+                r["status"] = "crashed"
+                r["crashed_at"] = now
+                bets = r.get("bets") or {}
+                pnl_delta = 0
+                for pid, p in list(bets.items()):
+                    if not isinstance(p, dict):
+                        continue
+                    amt = int(p.get("amount") or 0)
+                    if p.get("cashed"):
+                        continue
+                    pnl_delta += amt
+                    try:
+                        db.add_history({
+                            "uid": int(pid) if str(pid).lstrip("-").isdigit() else 0,
+                            "type": "rocket_lose",
+                            "bet": amt,
+                            "mult": float(r.get("display_crash") or display_crash),
+                            "win": 0,
+                        })
+                    except Exception:
+                        pass
+                r["house_pnl"] = int(r.get("house_pnl") or 0) + pnl_delta
+                hp = int(r.get("house_pnl") or 0)
+                if hp > 5000:
+                    r["house_pnl"] = int(hp * 0.9)
+                elif hp < -8000:
+                    r["house_pnl"] = -8000
+                hist = list(r.get("history") or [])
+                hist.insert(0, float(r.get("display_crash") or display_crash))
+                r["history"] = hist[:40]
+                db.save_rocket(r)
+                return
+
+        elif status == "crashed":
+            crashed_at = float(r.get("crashed_at") or 0)
+            if crashed_at <= 0:
+                r["crashed_at"] = now
+                db.save_rocket(r)
+                return
+            if now - crashed_at >= ROCKET_CRASH_HOLD:
+                r["status"] = "pause"
+                r["pause_until"] = now + ROCKET_PAUSE_SEC
+                db.save_rocket(r)
+                return
+
+        elif status == "pause":
+            until = float(r.get("pause_until") or 0)
+            if until <= 0 or now >= until:
+                r = _rocket_start_betting(r)
+                db.save_rocket(r)
+                return
+        else:
+            r = _rocket_start_betting(r)
+            db.save_rocket(r)
+    except Exception:
+        log.exception("rocket_tick")
+
+
+class RocketBetIn(BaseModel):
+    amount: int
+
+
+@app.get("/api/rocket/state")
+async def rocket_state(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = 0
+    try:
+        uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    except Exception:
+        uid = 0
+    # advance state machine on every poll — no wait for background loop
+    try:
+        _rocket_tick()
+    except Exception:
+        log.exception("rocket tick on state")
+    r = db.get_rocket()
+    # lazy init
+    if not r.get("betting_ends_at") and r.get("status") == "betting":
+        r = _rocket_start_betting(r)
+        db.save_rocket(r)
+    return _rocket_public(r, uid)
+
+
+@app.post("/api/rocket/bet")
+async def rocket_bet(
+    body: RocketBetIn,
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    amount = int(body.amount)
+    if amount < MIN_BET:
+        raise HTTPException(400, f"min {MIN_BET}")
+    if amount > 50000:
+        raise HTTPException(400, "макс 50000★")
+    r = db.get_rocket()
+    if (r.get("status") or "") != "betting":
+        raise HTTPException(400, "приём ставок закрыт")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    if str(uid) in bets:
+        raise HTTPException(400, "ставка уже сделана в этом раунде")
+    # charge first
+    try:
+        change_balance(uid, -amount, "rocket_bet")
+    except ValueError:
+        raise HTTPException(400, "no balance")
+    # re-read to reduce race with tick (betting→flying)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "betting":
+        # refund
+        try:
+            change_balance(uid, amount, "rocket_bet_refund")
+        except Exception:
+            pass
+        raise HTTPException(400, "приём ставок закрыт")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    if str(uid) in bets:
+        try:
+            change_balance(uid, amount, "rocket_bet_refund")
+        except Exception:
+            pass
+        raise HTTPException(400, "ставка уже сделана в этом раунде")
+    tu = public_user(uid)
+    un = tu.get("username") or ""
+    bets[str(uid)] = {
+        "amount": amount,
+        "cashed": False,
+        "cashout_mult": None,
+        "username": un or ("ID " + str(uid)),
+    }
+    r["bets"] = bets
+    db.save_rocket(r)
+    try:
+        db.add_history({"uid": uid, "type": "rocket_bet", "bet": amount, "win": 0})
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "balance": public_user(uid)["balance"],
+        "state": _rocket_public(r, uid),
+    }
+
+
+@app.post("/api/rocket/cashout")
+async def rocket_cashout(
+    request: Request,
+    x_telegram_id: Optional[str] = Header(None),
+    tg_id: Optional[str] = Query(None),
+):
+    uid = require_uid(x_telegram_id or request.headers.get("x-telegram-id"), tg_id)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "flying":
+        raise HTTPException(400, "сейчас нельзя забрать")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    p = bets.get(str(uid))
+    if not p or not isinstance(p, dict):
+        raise HTTPException(400, "нет ставки")
+    if p.get("cashed"):
+        raise HTTPException(400, "уже забрал")
+    now = time.time()
+    fly_started = float(r.get("fly_started_at") or 0)
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    t = max(0.0, now - fly_started)
+    mult = _rocket_mult_at(t)
+    if mult >= display_crash or mult >= crash_pay:
+        raise HTTPException(400, "уже краш")
+    pay_mult = min(mult, crash_pay, ROCKET_MAX_PAY)
+    amount = int(p.get("amount") or 0)
+    payout = int(amount * pay_mult)
+    if payout < 1:
+        raise HTTPException(400, "слишком рано")
+    # re-check after compute (anti double-cashout)
+    r = db.get_rocket()
+    if (r.get("status") or "") != "flying":
+        raise HTTPException(400, "уже краш")
+    bets = r.get("bets") if isinstance(r.get("bets"), dict) else {}
+    p = bets.get(str(uid))
+    if not p or not isinstance(p, dict):
+        raise HTTPException(400, "нет ставки")
+    if p.get("cashed"):
+        raise HTTPException(400, "уже забрал")
+    # recompute mult on latest clock
+    now = time.time()
+    fly_started = float(r.get("fly_started_at") or 0)
+    crash_pay = float(r.get("crash_at") or 1.0)
+    display_crash = float(r.get("display_crash") or crash_pay)
+    t = max(0.0, now - fly_started)
+    mult = _rocket_mult_at(t)
+    if mult >= display_crash or mult >= crash_pay:
+        raise HTTPException(400, "уже краш")
+    pay_mult = min(mult, crash_pay, ROCKET_MAX_PAY)
+    amount = int(p.get("amount") or 0)
+    payout = int(amount * pay_mult)
+    if payout < 1:
+        raise HTTPException(400, "слишком рано")
+    # mark cashed BEFORE balance credit to reduce double-pay window
+    p["cashed"] = True
+    p["cashout_mult"] = pay_mult
+    bets[str(uid)] = p
+    r["bets"] = bets
+    r["house_pnl"] = int(r.get("house_pnl") or 0) + amount - payout
+    db.save_rocket(r)
+    try:
+        change_balance(uid, payout, "rocket_win")
+    except Exception as e:
+        # rollback flag if credit failed
+        try:
+            r2 = db.get_rocket()
+            b2 = r2.get("bets") or {}
+            if str(uid) in b2 and isinstance(b2[str(uid)], dict):
+                b2[str(uid)]["cashed"] = False
+                b2[str(uid)]["cashout_mult"] = None
+                r2["bets"] = b2
+                db.save_rocket(r2)
+        except Exception:
+            pass
+        raise HTTPException(500, "cashout failed")
+    # все забрали — иногда чуть улетит, чаще крашится рядом с последним кешаутом
+    # (не форсить всегда ×4–7 — это палит «луну после всех»)
+    try:
+        r3 = db.get_rocket()
+        b3 = r3.get("bets") if isinstance(r3.get("bets"), dict) else {}
+        still = [p for p in b3.values() if isinstance(p, dict) and not p.get("cashed")]
+        if b3 and not still:
+            cur = float(r3.get("display_crash") or pay_mult)
+            roll = random.random()
+            if roll < 0.22 and cur < 5.5:
+                # редко — красивая луна
+                r3["display_crash"] = round(min(ROCKET_MAX_SHOW, max(cur, random.uniform(3.2, 6.8))), 2)
+                db.save_rocket(r3)
+            elif roll < 0.55:
+                # чуть выше последнего кеша
+                bump = pay_mult + random.uniform(0.08, 0.85)
+                r3["display_crash"] = round(min(float(r3.get("display_crash") or bump), max(pay_mult, bump)), 2)
+                # не выше исходного display, если он уже ниже
+                orig = float(r3.get("crash_at") or pay_mult)
+                r3["display_crash"] = round(min(max(pay_mult, r3["display_crash"]), max(orig, pay_mult + 0.5)), 2)
+                db.save_rocket(r3)
+            # иначе оставляем исходный crash — выглядит честно
+    except Exception:
+        pass
+    try:
+        db.add_history({
+            "uid": uid,
+            "type": "rocket_win",
+            "bet": amount,
+            "mult": pay_mult,
+            "win": payout,
+        })
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "payout": payout,
+        "mult": pay_mult,
+        "balance": public_user(uid)["balance"],
+        "state": _rocket_public(db.get_rocket(), uid),
+    }
+
+
+# ---------- ARENA ----------
+
+def _arena_public(a: dict) -> dict:
+    players = []
+    total = 0
+    for pid, p in (a.get("players") or {}).items():
+        val = int(p.get("stars") or 0)
+        total += val
+        ud = db.get_users().get(str(pid), {}) if isinstance(db.get_users(), dict) else {}
+        if not isinstance(ud, dict):
+            ud = {}
+        players.append(
+            {
+                "uid": pid,
+                "username": p.get("username") or ud.get("username"),
+                "stars": val,
+                "gift": p.get("gift"),
+                "photo_url": ud.get("photo_url") or p.get("photo_url") or "",
+                "first_name": ud.get("first_name") or p.get("first_name") or "",
+                "color": p.get("color") or "",
+            }
+        )
+    for p in players:
+        p["pct"] = round(100.0 * p["stars"] / total, 2) if total else 0
+    spin_at = a.get("spin_at")
+    left = 0
+    if spin_at:
+        left = max(0, int(spin_at - time.time()))
+    return {
+        "status": a.get("status", "open"),
+        "total": total,
+        "players": players,
+        "spin_at": spin_at,
+        "countdown": left,
+        "need": 2,
+    }
+
+
+def _player_color(uid: str) -> str:
+    colors = ["#f97316", "#3b82f6", "#10b981", "#a855f7", "#ef4444", "#eab308", "#06b6d4", "#ec4899", "#84cc16", "#6366f1"]
+    try:
+        n = int(uid)
+    except Exception:
+        n = sum(ord(c) for c in str(uid))
+    return colors[n % len(colors)]
+
+
+async def _do_arena_roll(a: dict) -> dict:
+    players = a.get("players") or {}
+    if len(players) < 2:
+        raise HTTPException(400, "need 2+")
+    total = sum(int(p.get("stars") or 0) for p in players.values())
+    if total <= 0:
+        raise HTTPException(400, "empty bank")
+    force = a.get("force_uid")
+    if force and str(force) in players:
+        winner = str(force)
+    else:
+        r = random.uniform(0, total)
+        acc = 0
+        winner = list(players.keys())[0]
+        for pid, p in players.items():
+            acc += int(p.get("stars") or 0)
+            if r <= acc:
+                winner = pid
+                break
+    win_user = db.ensure_user(int(winner))
+    gifts_won = []
+    stars_pool = 0
+    pcts = []
+    for pid, p in players.items():
+        st = int(p.get("stars") or 0)
+        pcts.append(
+            {
+                "uid": pid,
+                "username": p.get("username"),
+                "pct": round(100.0 * st / total, 2),
+                "stars": st,
+                "color": p.get("color") or _player_color(str(pid)),
+            }
+        )
+        glist = []
+        if p.get("gift"):
+            glist.append(p["gift"])
+        for gg in p.get("gifts") or []:
+            if gg and gg not in glist:
+                glist.append(gg)
+        if glist:
+            gifts_won.extend(glist)
+            # гифты уже учтены в stars как цена; stars_pool только чистые ★ без гифтов?
+            # сейчас stars включает цену гифта — победителю звёзды + гифты
+            pure = st
+            for gg in glist:
+                pure -= int((gg or {}).get("price") or 0)
+            if pure > 0:
+                stars_pool += pure
+        else:
+            stars_pool += st
+    if stars_pool:
+        change_balance(int(winner), stars_pool, "arena_win")
+    if gifts_won:
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(winner)
+        items = inv.get(key)
+        if not isinstance(items, list):
+            items = []
+        for g in gifts_won:
+            items.append(g)
+        inv[key] = items
+        db.save_inv(inv)
+    result = {
+        "winner": winner,
+        "username": win_user.get("username"),
+        "first_name": win_user.get("first_name") or "",
+        "photo_url": win_user.get("photo_url") or players.get(str(winner), {}).get("photo_url") or "",
+        "total": total,
+        "stars_won": int(stars_pool),
+        "pcts": pcts,
+        "gifts": gifts_won,
+        "color": players.get(str(winner), {}).get("color") or _player_color(str(winner)),
+    }
+    db.add_history({"uid": int(winner), "type": "arena_win", "total": total, "result": result})
+    result["ts"] = time.time()
+    db.save_arena({
+        "status": "open",
+        "players": {},
+        "force_uid": None,
+        "started_at": None,
+        "spin_at": None,
+        "last_result": result,
+        "last_result_until": time.time() + 18,
+    })
+    return result
+
+
+@app.get("/api/arena")
+async def arena_state(x_telegram_id: Optional[str] = Header(None)):
+    require_uid(x_telegram_id)
+    a = db.get_arena()
+    players = a.get("players") or {}
+    # авто-ролл по таймеру
+    if len(players) >= 2 and a.get("spin_at") and time.time() >= float(a["spin_at"]):
+        try:
+            result = await _do_arena_roll(a)
+            a = db.get_arena()
+        except Exception as e:
+            log.warning("auto roll: %s", e)
+            a = db.get_arena()
+    out = _arena_public(a)
+    # держим last_result ~18 сек чтобы клиент успел прокрутить анимацию
+    until = float(a.get("last_result_until") or 0)
+    lr = a.get("last_result")
+    if lr and time.time() < until:
+        out["last_result"] = lr
+    return out
+
+
+@app.post("/api/arena/join")
+async def arena_join(body: ArenaJoin, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    a = db.get_arena()
+    if a.get("status") not in (None, "open"):
+        a["status"] = "open"
+    u = db.ensure_user(uid)
+    stars = 0
+    gift = None
+    if body.gift_id:
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        items = inv.get(str(uid), [])
+        if not isinstance(items, list):
+            items = []
+        item = next((x for x in items if isinstance(x, dict) and x.get("id") == body.gift_id), None)
+        if not item:
+            raise HTTPException(400, "no gift")
+        stars = int(item.get("price") or 0)
+        if stars < MIN_BET:
+            raise HTTPException(400, f"gift min {MIN_BET}")
+        inv[str(uid)] = [x for x in items if x.get("id") != body.gift_id]
+        db.save_inv(inv)
+        gift = {"id": item["id"], "link": item.get("link"), "title": item.get("title"), "price": stars}
+    else:
+        stars = int(body.amount)
+        if stars < MIN_BET:
+            raise HTTPException(400, f"min {MIN_BET}")
+        try:
+            change_balance(uid, -stars, "arena_bet")
+        except ValueError:
+            raise HTTPException(400, "no balance")
+
+    a.setdefault("players", {})
+    if not isinstance(a["players"], dict):
+        a["players"] = {}
+    key = str(uid)
+    prev = a["players"].get(key)
+    gifts_list = []
+    if isinstance(prev, dict):
+        # докидываем ставку, не затираем
+        if prev.get("gift"):
+            gifts_list.append(prev["gift"])
+        for g in prev.get("gifts") or []:
+            if g:
+                gifts_list.append(g)
+        prev_stars = int(prev.get("stars") or 0)
+    else:
+        prev_stars = 0
+    if gift:
+        gifts_list.append(gift)
+    total_stars = prev_stars + stars
+    a["players"][key] = {
+        "username": u.get("username"),
+        "stars": total_stars,
+        "gift": gifts_list[-1] if gifts_list else None,
+        "gifts": gifts_list,
+        "photo_url": u.get("photo_url") or "",
+        "first_name": u.get("first_name") or "",
+        "color": (prev or {}).get("color") if isinstance(prev, dict) else _player_color(key),
+    }
+    if not a["players"][key]["color"]:
+        a["players"][key]["color"] = _player_color(key)
+    # таймер 10 сек когда 2+ игрока; каждый новый вход/докид сбрасывает на 15
+    if len(a["players"]) >= 2:
+        a["spin_at"] = time.time() + 10
+        a["status"] = "open"
+    else:
+        a["spin_at"] = None
+    db.save_arena(a)
+    return _arena_public(a)
+
+
+@app.post("/api/arena/roll")
+async def arena_roll(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin only")
+    a = db.get_arena()
+    result = await _do_arena_roll(a)
+    out = _arena_public(db.get_arena())
+    out["last_result"] = result
+    return out
+
+
+# ---------- INVENTORY ----------
+@app.get("/api/inventory")
+async def api_inv(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    return {"items": inv.get(str(uid), [])}
+
+
+@app.post("/api/inventory/sell")
+async def inv_sell(body: GiftSell, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    items = inv.get(str(uid), [])
+    item = next((x for x in items if x["id"] == body.gift_id), None)
+    if not item:
+        raise HTTPException(400, "no gift")
+    price = int(item["price"])
+    inv[str(uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    change_balance(uid, price, "sell_gift")
+    # notify owners
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), f"💱 @{public_user(uid)['username']} продал гифт {item.get('title')} за {price}★")
+        except Exception:
+            pass
+    return {"ok": True, "balance": public_user(uid)["balance"]}
+
+
+@app.post("/api/inventory/withdraw")
+async def inv_withdraw(body: GiftWithdraw, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    inv = db.get_inv()
+    items = inv.get(str(uid), [])
+    item = next((x for x in items if x["id"] == body.gift_id), None)
+    if not item:
+        raise HTTPException(400, "no gift")
+    try:
+        change_balance(uid, -WITHDRAW_FEE, "withdraw_fee")
+    except ValueError:
+        raise HTTPException(400, f"need {WITHDRAW_FEE}★ fee")
+    inv[str(uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    w = db.get_withdraws()
+    req = {
+        "id": db.new_id(),
+        "uid": uid,
+        "username": public_user(uid)["username"],
+        "gift": item,
+        "status": "pending",
+        "ts": int(time.time()),
+    }
+    w.insert(0, req)
+    db.save_withdraws(w)
+    text = (
+        f"📤 Вывод гифта\n@{req['username']} <code>{uid}</code>\n"
+        f"{item.get('title')} | {item.get('price')}★\n{item.get('link')}\n"
+        f"Fee {WITHDRAW_FEE}★ списан"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправил", callback_data="wdone:" + str(req["id"])),
+                InlineKeyboardButton(text="❌ Отказ", callback_data="wrej:" + str(req["id"])),
+            ]
+        ]
+    )
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    for adm in db.get_settings().get("admins", []):
+        try:
+            await bot.send_message(int(adm), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    return {"ok": True, "balance": public_user(uid)["balance"]}
+
+
+
+
+@app.post("/api/withdraw/stars")
+async def withdraw_stars(body: StarsWithdraw, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    if amount < MIN_WITHDRAW:
+        raise HTTPException(400, f"мин. вывод {MIN_WITHDRAW}★")
+    try:
+        change_balance(uid, -amount, "stars_withdraw")
+    except ValueError:
+        raise HTTPException(400, "недостаточно ★")
+    gift_value = int(amount * 0.85)
+    u = public_user(uid)
+    w = db.get_withdraws()
+    req = {
+        "id": db.new_id(),
+        "uid": uid,
+        "username": u.get("username") or "",
+        "type": "stars",
+        "amount": amount,
+        "gift_value": gift_value,
+        "status": "pending",
+        "ts": int(time.time()),
+    }
+    w.insert(0, req)
+    db.save_withdraws(w)
+    text = (
+        "⭐ Вывод звёзд → гифт\n"
+        "@" + str(req["username"] or "—") + " <code>" + str(uid) + "</code>\n"
+        "Списал: <b>" + str(amount) + "★</b>\n"
+        "Гифт на ~<b>" + str(gift_value) + "★</b> (−15%)\n"
+        "Отправить в течение 10 мин"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправил", callback_data="wdone:" + str(req["id"])),
+                InlineKeyboardButton(text="❌ Отказ", callback_data="wrej:" + str(req["id"])),
+            ]
+        ]
+    )
+    for oid in filter(None, [OWNER_ID, OWNER2_ID, db.get_settings().get("owner2")]):
+        try:
+            await bot.send_message(int(oid), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    for adm in db.get_settings().get("admins", []):
+        try:
+            await bot.send_message(int(adm), text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    try:
+        await bot.send_message(
+            uid,
+            "✅ Заявка принята\n\n"
+            "Списано: " + str(amount) + "★\n"
+            "Гифт ≈ " + str(gift_value) + "★ (на 15% ниже)\n\n"
+            "В течение 10 минут отправим подарок на ваш аккаунт.",
+        )
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "amount": amount,
+        "gift_value": gift_value,
+        "balance": public_user(uid)["balance"],
+    }
+
+
+# ---------- CHECKS ----------
+# лок против гонок чеков (lazy — не создавать Lock до event loop)
+_checks_lock = None
+_broadcast_running = False
+
+
+def _get_checks_lock() -> asyncio.Lock:
+    global _checks_lock
+    if _checks_lock is None:
+        _checks_lock = asyncio.Lock()
+    return _checks_lock
+
+
+@app.post("/api/check/create")
+async def check_create(body: CheckCreate, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    amount = int(body.amount)
+    uses = max(1, int(getattr(body, "uses", 1) or 1))
+    if uses > 50:
+        raise HTTPException(400, "макс. 50 использований на чек")
+    if amount < 1:
+        raise HTTPException(400, "Сумма чека должна быть больше 0")
+    # списываем amount * uses (каждый активация = amount ★)
+    total = amount * uses
+    try:
+        change_balance(uid, -total, "check_create")
+    except ValueError:
+        raise HTTPException(400, f"Недостаточно ★ (нужно {total}★ = {amount}×{uses})")
+    code = db.new_id()
+    async with _get_checks_lock():
+        c = db.get_checks()
+        c[code] = {
+            "from": uid,
+            "amount": amount,
+            "uses_left": uses,
+            "uses_max": uses,
+            "used": False,  # совместимость со старыми чеками
+            "used_by": [],
+        }
+        db.save_checks(c)
+    bot_user = BOT_USERNAME.lstrip("@") if "BOT_USERNAME" in dir() else "winlinebot"
+    try:
+        from config import BOT_USERNAME as _BU
+        bot_user = str(_BU or "winlinebot").lstrip("@")
+    except Exception:
+        bot_user = "winlinebot"
+    link = f"https://catup.lol/{bot_user}?start=check_{code}"
+    link_tg = f"https://t.me/{bot_user}?start=check_{code}"
+    try:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Поделиться", url=link)],
+            ]
+        )
+        await bot.send_message(
+            uid,
+            "🎫 Чек " + str(amount) + "★\n"
+            "Активаций: " + str(uses) + (" (одноразовый)" if uses == 1 else "") + "\n"
+            "Списано с баланса: " + str(amount * uses) + "★\n"
+            "Код: " + code,
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.warning("check notify: %s", e)
+
+    return {
+        "code": code,
+        "amount": amount,
+        "uses": uses,
+        "balance": public_user(uid)["balance"],
+        "link": link,
+        "link_tg": link_tg,
+    }
+
+
+def _check_can_use(row: dict, uid: int) -> tuple[bool, str]:
+    """Проверка чека. Возвращает (ok, error_msg)."""
+    if not row:
+        return False, "Чек не найден"
+    # старый формат: used=True
+    if row.get("used") and int(row.get("uses_left", 0) or 0) <= 0 and "uses_left" not in row:
+        return False, "Чек уже использован"
+    uses_left = row.get("uses_left")
+    if uses_left is None:
+        # старый одноразовый
+        if row.get("used"):
+            return False, "Чек уже использован"
+        uses_left = 1
+    if int(uses_left) <= 0:
+        return False, "Чек исчерпан (0 использований)"
+    used_by = row.get("used_by") or []
+    try:
+        used_ids = {int(x) for x in used_by}
+    except Exception:
+        used_ids = set()
+    if int(uid) in used_ids:
+        return False, "Ты уже активировал этот чек"
+    if int(row.get("from") or 0) == int(uid):
+        return False, "Нельзя активировать свой чек"
+    return True, ""
+
+
+def _check_consume(row: dict, uid: int) -> dict:
+    uses_left = row.get("uses_left")
+    if uses_left is None:
+        uses_left = 0 if row.get("used") else 1
+    uses_left = int(uses_left) - 1
+    row["uses_left"] = uses_left
+    if uses_left <= 0:
+        row["used"] = True
+    used_by = list(row.get("used_by") or [])
+    used_by.append(int(uid))
+    row["used_by"] = used_by
+    return row
+
+
+@app.post("/api/check/activate")
+async def check_activate(body: CheckActivate, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "нет кода")
+    async with _get_checks_lock():
+        c = db.get_checks()
+        row = c.get(code)
+        ok, err = _check_can_use(row, uid)
+        if not ok:
+            raise HTTPException(400, err)
+        row = _check_consume(dict(row), uid)
+        c[code] = row
+        db.save_checks(c)
+        amt = int(row["amount"])
+    change_balance(uid, amt, "check_activate")
+    return {
+        "ok": True,
+        "amount": amt,
+        "uses_left": row.get("uses_left", 0),
+        "balance": public_user(uid)["balance"],
+    }
+
+
+# ---------- DEPOSIT CONFIRM ----------
+_last_confirm: dict = {}
+_dep_pending_amount: dict = {}  # admin_id -> order_id
+
+
+@app.post("/api/deposit/confirm")
+async def dep_confirm(body: ConfirmDep, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    now = time.time()
+    if now - _last_confirm.get(uid, 0) < 30:
+        raise HTTPException(400, "подожди 30 сек")
+    _last_confirm[uid] = now
+    u = public_user(uid)
+    uname = (u.get("username") or "").lstrip("@")
+    first = u.get("first_name") or ""
+    if not uname or uname.isdigit():
+        try:
+            chat = await bot.get_chat(uid)
+            if getattr(chat, "username", None):
+                uname = str(chat.username).lstrip("@")
+            if not first and getattr(chat, "first_name", None):
+                first = str(chat.first_name)
+            users = db.get_users()
+            if str(uid) in users:
+                if uname:
+                    users[str(uid)]["username"] = uname.lower()
+                if first:
+                    users[str(uid)]["first_name"] = first
+                db.save_users(users)
+        except Exception as e:
+            log.warning("get_chat %s: %s", uid, e)
+    oid_order = db.new_id()
+    deps = db.get_deposits()
+    deps[oid_order] = {
+        "id": oid_order,
+        "uid": uid,
+        "username": uname or "",
+        "first_name": first,
+        "note": body.note or "",
+        "status": "pending",
+        "ts": int(now),
+    }
+    db.save_deposits(deps)
+
+    if uname and not str(uname).isdigit():
+        name_line = "@" + uname
+    elif first:
+        name_line = first + " (без @)"
+    else:
+        name_line = "нет username"
+    lines = [
+        "📥 Заявка на депозит #" + str(oid_order),
+        "Игрок: " + name_line,
+        "Username: @" + (uname if uname else "нет"),
+        "Имя: " + (first if first else "—"),
+        "ID: " + str(uid),
+        "Заметка: " + (body.note or "—"),
+        "Банк: " + str(BANK),
+        "",
+        "Выбери сумму или гифт:",
+    ]
+    text = chr(10).join(lines)
+    rows = [
+        [
+            InlineKeyboardButton(text="500★", callback_data=f"depok:{oid_order}:500"),
+            InlineKeyboardButton(text="1k★", callback_data=f"depok:{oid_order}:1000"),
+            InlineKeyboardButton(text="2.5k★", callback_data=f"depok:{oid_order}:2500"),
+        ],
+        [
+            InlineKeyboardButton(text="5k★", callback_data=f"depok:{oid_order}:5000"),
+            InlineKeyboardButton(text="10k★", callback_data=f"depok:{oid_order}:10000"),
+            InlineKeyboardButton(text="25k★", callback_data=f"depok:{oid_order}:25000"),
+        ],
+        [
+            InlineKeyboardButton(text="✍️ Своя ★", callback_data=f"depask:{oid_order}"),
+            InlineKeyboardButton(text="🎁 Гифт", callback_data=f"depgift:{oid_order}"),
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"depno:{oid_order}"),
+        ],
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    targets = set()
+    for oid in [OWNER_ID, OWNER2_ID, int(db.get_settings().get("owner2") or 0)]:
+        if oid:
+            targets.add(int(oid))
+    for adm in db.get_settings().get("admins") or []:
+        try:
+            targets.add(int(adm))
+        except Exception:
+            pass
+    sent = 0
+    for oid in targets:
+        try:
+            await bot.send_message(oid, text, reply_markup=kb) if kb else await bot.send_message(oid, text)
+            sent += 1
+        except Exception as e:
+            log.warning("dep notify %s: %s", oid, e)
+    if not sent:
+        log.warning("no admins got deposit notify")
     return {"ok": True}
 
-@app.post("/api/boss/status")
-async def boss_status_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {}
 
-# картинки подарков от юзербота лежат на постоянном томе (data/gifts), а не внутри образа
-GIFTS_DIR = os.getenv("GIFTS_IMG_DIR", "data/gifts")
-os.makedirs(GIFTS_DIR, exist_ok=True)
-app.mount("/static/gifts", StaticFiles(directory=GIFTS_DIR), name="gifts")   # раньше общего /static
-
-# app.js: берём из static/, а если лежит в корне репозитория — оттуда
-@app.get("/static/app.js")
-async def app_js():
-    for p in (ASSETS / "app.js", ROOT / "app.js"):
-        if p.is_file():
-            return FileResponse(p, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
-    raise HTTPException(404, "app.js not found")
+# ---------- ADMIN API ----------
+@app.get("/api/admin/state")
+async def admin_state(x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    s = db.get_settings()
+    return {
+        "settings": s,
+        "is_owner": db.is_owner(uid),
+        "withdraws": [w for w in db.get_withdraws() if w.get("status") == "pending"][:20],
+    }
 
 
-# статика: /static/*, /images/* — и всё
-if ASSETS.is_dir():
-    app.mount("/static", StaticFiles(directory=ASSETS), name="assets")
-if IMAGES:
-    app.mount("/images", StaticFiles(directory=IMAGES), name="images")
-if (ASSETS / "img").is_dir():
-    app.mount("/img", StaticFiles(directory=ASSETS / "img"), name="img")
-
-
-# админ-бот и юзербот (bots.py) стартуют вместе с сервером — отдельные процессы не нужны
-@app.on_event("startup")
-async def _start_bots():
-    try:   # авто-подарки из картинок static/gifts больше не добавляются; убираем ранее засеянные (оставляем только добавленные тобой: lk_/up_/sg_)
-        with db.connect() as c:
-            c.execute("DELETE FROM catalog_gifts WHERE slug NOT LIKE 'lk\\_%' ESCAPE '\\' AND slug NOT LIKE 'up\\_%' ESCAPE '\\' AND slug NOT LIKE 'sg\\_%' ESCAPE '\\'")
-    except Exception as e:
-        print("catalog cleanup:", e)
+@app.post("/api/admin/give")
+async def admin_give(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    db.ensure_user(target)
+    change_balance(target, int(body.amount), f"admin_give by {admin}")
+    u = db.get_users()
+    if body.amount > 0:
+        u[str(target)]["deposited"] = int(u[str(target)].get("deposited") or 0) + int(body.amount)
+        db.save_users(u)
     try:
-        import bots
-        bots.start()
+        await bot.send_message(target, f"💰 Баланс изменён на {body.amount:+d}★")
+    except Exception:
+        pass
+    return {"ok": True, "uid": target, "balance": public_user(target)["balance"]}
+
+
+@app.post("/api/admin/gift")
+async def admin_gift(body: AdminGift, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    db.ensure_user(body.uid)
+    inv = db.get_inv()
+    item = {
+        "id": db.new_id(),
+        "link": body.link,
+        "price": int(body.price),
+        "title": body.title or "Gift",
+    }
+    inv.setdefault(str(body.uid), []).append(item)
+    db.save_inv(inv)
+    try:
+        await bot.send_message(
+            body.uid,
+            f"🎁 Гифт в инвентарь: {item['title']} (~{item['price']}★)\n{item['link']}",
+        )
+    except Exception:
+        pass
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/admin/take_gift")
+async def admin_take_gift(body: AdminTakeGift, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_admin(uid):
+        raise HTTPException(403, "admin")
+    inv = db.get_inv()
+    items = inv.get(str(body.uid), [])
+    inv[str(body.uid)] = [x for x in items if x["id"] != body.gift_id]
+    db.save_inv(inv)
+    return {"ok": True}
+
+
+@app.post("/api/admin/odds")
+async def admin_odds(body: AdminOdds, x_telegram_id: Optional[str] = Header(None)):
+    uid = require_uid(x_telegram_id)
+    if not db.is_owner(uid):
+        raise HTTPException(403, "owner")
+    s = db.get_settings()
+    if body.slot_777 is not None:
+        s["slot_777"] = float(body.slot_777)
+    if body.slot_triple is not None:
+        s["slot_triple"] = float(body.slot_triple)
+    db.save_settings(s)
+    return {"ok": True, "settings": s}
+
+
+@app.post("/api/admin/force")
+async def admin_force(body: AdminForce, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner")
+    a = db.get_arena()
+    if body.user or body.uid:
+        a["force_uid"] = resolve_target(body)
+    else:
+        a["force_uid"] = None
+    db.save_arena(a)
+    return {"ok": True, "force_uid": a.get("force_uid")}
+
+
+@app.post("/api/admin/owner2")
+async def admin_owner2(body: AdminOwner2, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner")
+    target = resolve_target(body)
+    st = db.get_settings()
+    st["owner2"] = int(target)
+    db.save_settings(st)
+    return {"ok": True, "owner2": target}
+
+
+# ---------- BOT COMMANDS ----------
+
+def _channel_username() -> str:
+    ch = (REQUIRED_CHANNEL or "").strip()
+    if not ch:
+        return ""
+    return ch if ch.startswith("@") else ("@" + ch.lstrip("@"))
+
+
+def _user_channel_ok(uid: int) -> bool:
+    try:
+        u = db.get_users().get(str(uid), {}) or {}
+        return bool(u.get("channel_ok"))
+    except Exception:
+        return False
+
+
+def _set_channel_ok(uid: int) -> None:
+    try:
+        users = db.get_users()
+        k = str(uid)
+        if k not in users or not isinstance(users.get(k), dict):
+            db.ensure_user(uid)
+            users = db.get_users()
+        users[k]["channel_ok"] = True
+        db.save_users(users)
     except Exception as e:
-        print("bots не запущены:", e)
+        log.warning("set channel_ok: %s", e)
+
+
+async def _is_subscribed(uid: int) -> bool:
+    """Только визуал: нажал «Я подписался» → флаг. Без API, без пересылки."""
+    ch = _channel_username()
+    if not ch:
+        return True
+    if db.is_moderator(uid):
+        return True
+    return _user_channel_ok(uid)
+
+
+def _welcome_kb():
+    url = (WEBAPP_URL or os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+    if url and not url.startswith("http"):
+        url = "https://" + url
+    if not url:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть Winline", web_app=WebAppInfo(url=url))],
+            [InlineKeyboardButton(text="Банк", url="https://catup.lol/winlinebank")],
+        ]
+    )
+
+
+def _sub_keyboard():
+    ch = _channel_username()
+    rows = []
+    if ch:
+        rows.append(
+            [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://catup.lol/" + ch.lstrip("@"))]
+        )
+    rows.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="checksub")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_welcome(message: Message, name: str = ""):
+    kb = _welcome_kb()
+    text = (
+        "Привет" + (", " + name if name else "") + "!\n\n"
+        "Winline — слоты, мины, PVP-арена.\n"
+        "Банк: " + str(BANK) + "\n\n"
+        "1. Открой приложение кнопкой\n"
+        "2. Пополни через банк\n"
+        "3. В аппке нажми Подтвердить — админ зачислит\n\n"
+        "Удачи!"
+    )
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "checksub")
+async def cb_checksub(callback: CallbackQuery):
+    """Визуал: ставим флаг и пускаем. Никакой API."""
+    uid = callback.from_user.id
+    _set_channel_ok(uid)
+    await callback.answer("Ок ✅")
+    name = callback.from_user.first_name or ""
+    try:
+        await _send_welcome(callback.message, name)
+    except Exception:
+        await callback.message.answer("Готово!", reply_markup=_welcome_kb())
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    try:
+        uid = message.from_user.id
+        uname = (message.from_user.username or "") or ""
+        db.ensure_user(uid, uname)
+        try:
+            users = db.get_users()
+            k = str(uid)
+            if k in users:
+                if message.from_user.first_name:
+                    users[k]["first_name"] = message.from_user.first_name
+                if uname:
+                    users[k]["username"] = uname.lower()
+                db.save_users(users)
+        except Exception as e:
+            log.warning("start save user: %s", e)
+
+        # активация чека: /start check_CODE
+        payload = ""
+        try:
+            parts = (message.text or "").split(maxsplit=1)
+            if len(parts) > 1:
+                payload = parts[1].strip()
+        except Exception:
+            pass
+        if payload.startswith("check_"):
+            code = payload[6:].strip()
+            async with _get_checks_lock():
+                checks = db.get_checks()
+                row = checks.get(code)
+                ok, err = _check_can_use(row, uid)
+                if not ok:
+                    await message.answer(err)
+                    return
+                row = _check_consume(dict(row), uid)
+                checks[code] = row
+                db.save_checks(checks)
+                amt = int(row["amount"])
+                left = int(row.get("uses_left") or 0)
+                from_uid = int(row.get("from") or 0)
+            bal = change_balance(uid, amt, "check_activate")
+            extra = f"\nОсталось использований: {left}" if left > 0 else ""
+            await message.answer(
+                "✅ Чек активирован: +" + str(amt) + "★\nБаланс: " + str(bal) + "★" + extra
+            )
+            if from_uid:
+                try:
+                    await bot.send_message(
+                        from_uid,
+                        "Твой чек " + code + " активирован (" + str(amt) + "★), осталось " + str(left),
+                    )
+                except Exception:
+                    pass
+            return
+
+        # визуальная «подписка» (без API): один раз кнопка → флаг channel_ok
+        if not await _is_subscribed(uid):
+            ch = _channel_username() or "@winline"
+            await message.answer(
+                "Подпишись на канал " + ch + " и нажми «Я подписался»",
+                reply_markup=_sub_keyboard(),
+            )
+            return
+
+        name = message.from_user.first_name or (uname and ("@" + uname)) or "игрок"
+        await _send_welcome(message, str(name))
+    except Exception as e:
+        log.exception("start failed")
+        try:
+            await message.answer("Winline онлайн. Ошибка старта: " + str(e)[:120])
+        except Exception:
+            pass
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "Админ-команды:\n"
+        "/give ID 5000 — выдать любую сумму ★\n"
+        "/take ID 100 — снять ★\n"
+        "/gift ID 1500 https://... — гифт в инвентарь\n"
+        "/force ID — гарант арены (0=сброс)\n"
+        "/odds777 0.005\n"
+        "/owner2 ID\n"
+        "/addadmin ID\n"
+        "/addmod ID|@user — добавить модератора\n"
+        "/delmod ID|@user — убрать модератора\n"
+        "/mods — список модеров\n"
+        "/broadcast текст — рассылка (мод+админ)\n\n"
+        "Модеры: /mod · /mgive · /mtake · /mcheck\n"
+        "Депозит: кнопки в заявке (★ или гифт)\n"
+        "Вывод гифтов: кнопки в ЛС"
+    )
+
+
+@router.message(Command("mod"))
+async def cmd_mod(message: Message):
+    """Отдельная панель модератора."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    is_full = db.is_admin(message.from_user.id)
+    lines = [
+        "🛡 Панель модератора",
+        "",
+        f"/mgive @user 1500 — выдать ★ (макс {MOD_GIVE_MAX})",
+        f"/mtake @user 500 — снять ★ (макс {MOD_GIVE_MAX})",
+        "/mcheck 5000 3 — чек 5000★ × 3 исп. (со своего баланса)",
+        "/broadcast текст — рассылка всем",
+        "",
+        "Работает и по @username, и по числовому ID",
+    ]
+    if is_full:
+        lines.append("")
+        lines.append("(ты админ — полный /admin тоже доступен)")
+    await message.answer("\n".join(lines))
+
+
+def _resolve_mod_target(ref: str):
+    """ID или @username → uid. Юзер должен хотя бы раз зайти в аппку."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    tuid = db.parse_user_ref(ref)
+    if tuid is not None:
+        return int(tuid)
+    try:
+        return int(ref.lstrip("@"))
+    except Exception:
+        return None
+
+
+@router.message(Command("mgive"))
+async def cmd_mgive(message: Message):
+    """Выдача модератором с лимитом MOD_GIVE_MAX. По ID или @username."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer(f"Формат: /mgive @user_или_ID сумма\nМакс {MOD_GIVE_MAX}★")
+        tuid = _resolve_mod_target(parts[1])
+        if tuid is None:
+            return await message.answer(
+                "Юзер не найден: " + parts[1] + "\n"
+                "Нужен числовой ID или @username (игрок должен зайти в аппку хотя бы раз)"
+            )
+        try:
+            amount = int(parts[2].replace(" ", "").replace("★", "").replace("+", ""))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 1500")
+        if amount <= 0:
+            return await message.answer("Сумма > 0")
+        if db.is_mod_only(message.from_user.id) and amount > MOD_GIVE_MAX:
+            return await message.answer(f"Лимит модератора: максимум {MOD_GIVE_MAX}★ за раз")
+        db.ensure_user(tuid)
+        bal = change_balance(tuid, amount, "mod_give by " + str(message.from_user.id))
+        # мод-выдача НЕ крутит deposited/топ
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer(
+            "✅ Мод-выдача " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+        )
+        try:
+            await bot.send_message(tuid, "✅ Тебе зачислено +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception as e:
+            log.warning("notify mgive: %s", e)
+    except Exception as e:
+        log.exception("mgive failed")
+        await message.answer("Ошибка /mgive: " + str(e)[:200])
+
+
+@router.message(Command("mtake"))
+async def cmd_mtake(message: Message):
+    """Снятие ★ модератором. Лимит MOD_GIVE_MAX. По ID или @username."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer(f"Формат: /mtake @user_или_ID сумма\nМакс {MOD_GIVE_MAX}★")
+        tuid = _resolve_mod_target(parts[1])
+        if tuid is None:
+            return await message.answer(
+                "Юзер не найден: " + parts[1] + "\n"
+                "Нужен ID или @username (игрок должен зайти в аппку)"
+            )
+        try:
+            amount = abs(int(parts[2].replace(" ", "").replace("★", "").replace("-", "")))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 500")
+        if amount <= 0:
+            return await message.answer("Сумма > 0")
+        if db.is_mod_only(message.from_user.id) and amount > MOD_GIVE_MAX:
+            return await message.answer(f"Лимит модератора: максимум {MOD_GIVE_MAX}★ за раз")
+        try:
+            bal = change_balance(tuid, -amount, "mod_take by " + str(message.from_user.id))
+        except ValueError:
+            return await message.answer("Не хватает баланса у игрока")
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer(
+            "✅ Снято " + str(amount) + "★ с @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+        )
+        try:
+            await bot.send_message(tuid, "С баланса снято " + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception("mtake failed")
+        await message.answer("Ошибка /mtake: " + str(e)[:200])
+
+
+@router.message(Command("mcheck"))
+async def cmd_mcheck(message: Message):
+    """Мод/админ: создать чек с лимитом использований. Списывает с баланса создателя."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            return await message.answer(
+                "Формат: /mcheck сумма [uses]\n"
+                "Пример: /mcheck 5000 3  — чек по 5000★, 3 активации (спишет 15000★)\n"
+                "Макс uses: 50"
+            )
+        amount = int(parts[1].replace("★", "").replace(" ", ""))
+        uses = int(parts[2]) if len(parts) >= 3 else 1
+        uses = max(1, min(50, uses))
+        if amount < 1:
+            return await message.answer("Сумма > 0")
+        uid = message.from_user.id
+        total = amount * uses
+        try:
+            change_balance(uid, -total, "mcheck_create")
+        except ValueError:
+            return await message.answer(f"Не хватает баланса (нужно {total}★)")
+        code = db.new_id()
+        async with _get_checks_lock():
+            c = db.get_checks()
+            c[code] = {
+                "from": uid,
+                "amount": amount,
+                "uses_left": uses,
+                "uses_max": uses,
+                "used": False,
+                "used_by": [],
+            }
+            db.save_checks(c)
+        bot_user = str(BOT_USERNAME or "winlinebot").lstrip("@")
+        link = f"https://catup.lol/{bot_user}?start=check_{code}"
+        await message.answer(
+            f"🎫 Чек создан\n"
+            f"Сумма за активацию: {amount}★\n"
+            f"Активаций: {uses}" + (" (одноразовый)" if uses == 1 else "") + "\n"
+            f"Списано с баланса: {total}★\n"
+            f"Код: <code>{code}</code>\n"
+            f"{link}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.exception("mcheck")
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+@router.message(Command("addmod"))
+async def cmd_addmod(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/addmod ID")
+    tid = db.parse_user_ref(parts[1])
+    if tid is None:
+        try:
+            tid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    st = db.get_settings()
+    mods = st.setdefault("moderators", [])
+    if not isinstance(mods, list):
+        mods = []
+    mods.append(int(tid))
+    st["moderators"] = list(set(int(x) for x in mods))
+    db.save_settings(st)
+    await message.answer("mod ok: " + str(tid))
+
+
+@router.message(Command("delmod"))
+async def cmd_delmod(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/delmod ID")
+    tid = db.parse_user_ref(parts[1])
+    if tid is None:
+        try:
+            tid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    st = db.get_settings()
+    mods = [int(x) for x in (st.get("moderators") or []) if int(x) != int(tid)]
+    st["moderators"] = mods
+    db.save_settings(st)
+    await message.answer("mod removed: " + str(tid))
+
+
+@router.message(Command("mods"))
+async def cmd_mods(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    mods = db.get_settings().get("moderators") or []
+    await message.answer("Модераторы: " + (", ".join(str(x) for x in mods) if mods else "пусто"))
+
+
+# состояние рассылки: admin_id -> waiting text
+_broadcast_pending: dict = {}
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message):
+    """Админ или мод. /broadcast текст — сразу, или /broadcast → следующим сообщением текст."""
+    if not db.is_moderator(message.from_user.id):
+        return
+    global _broadcast_running
+    if _broadcast_running:
+        return await message.answer("Уже идёт рассылка, подожди")
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        _broadcast_pending[message.from_user.id] = True
+        return await message.answer(
+            "📢 Рассылка\nПришли следующим сообщением текст (можно с эмодзи).\nОтмена: /cancel"
+        )
+    await _do_broadcast(message.from_user.id, parts[1].strip(), message)
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message):
+    if message.from_user.id in _broadcast_pending:
+        _broadcast_pending.pop(message.from_user.id, None)
+        await message.answer("Отменено")
+
+
+async def _do_broadcast(admin_id: int, text: str, reply_to: Message):
+    global _broadcast_running
+    if _broadcast_running:
+        await reply_to.answer("Уже идёт рассылка")
+        return
+    if not text or not str(text).strip():
+        await reply_to.answer("Пустой текст")
+        return
+    _broadcast_running = True
+    try:
+        users = db.get_users()
+        ids = []
+        for k in users.keys():
+            try:
+                ids.append(int(k))
+            except Exception:
+                pass
+        ok = 0
+        fail = 0
+        await reply_to.answer(f"📢 Рассылка {len(ids)} юзерам...")
+        for i, uid in enumerate(ids):
+            try:
+                await bot.send_message(uid, text)
+                ok += 1
+            except Exception:
+                fail += 1
+            # пауза, чтобы не упереться в лимиты API
+            if i % 20 == 19:
+                await asyncio.sleep(0.35)
+            else:
+                await asyncio.sleep(0.04)
+        await reply_to.answer(f"✅ Рассылка готова\nДоставлено: {ok}\nОшибки: {fail}")
+    except Exception as e:
+        log.exception("broadcast")
+        try:
+            await reply_to.answer("Ошибка рассылки: " + str(e)[:120])
+        except Exception:
+            pass
+    finally:
+        _broadcast_running = False
+
+
+
+@router.message(Command("give"))
+async def cmd_give(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer("Формат: /give ID_или_@user сумма\nПример: /give 1780308643 1500")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            # try force int
+            try:
+                tuid = int(parts[1].lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден. Используй числовой ID.")
+        try:
+            amount = int(parts[2].replace(" ", "").replace("★", "").replace("+", ""))
+        except ValueError:
+            return await message.answer("Сумма числом. Пример: 1500")
+        db.ensure_user(tuid)
+        bal = change_balance(tuid, amount, "give by " + str(message.from_user.id))
+        if amount > 0:
+            u = db.get_users()
+            u[str(tuid)]["deposited"] = int(u[str(tuid)].get("deposited") or 0) + amount
+            db.save_users(u)
+        un = (db.get_users().get(str(tuid), {}) or {}).get("username") or tuid
+        await message.answer("✅ Зачислено " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★")
+        try:
+            await bot.send_message(tuid, "✅ Тебе зачислено +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception as e:
+            log.warning("notify give: %s", e)
+    except Exception as e:
+        log.exception("give failed")
+        await message.answer("Ошибка /give: " + str(e)[:200])
+
+
+@router.message(Command("take"))
+async def cmd_take(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.answer("/take ID сумма")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(parts[1])
+            except Exception:
+                return await message.answer("Юзер не найден")
+        amount = abs(int(parts[2].replace(" ", "")))
+        bal = change_balance(tuid, -amount, "take by " + str(message.from_user.id))
+        await message.answer("✅ Снято " + str(amount) + "★ с ID " + str(tuid) + "\nБаланс: " + str(bal) + "★")
+        try:
+            await bot.send_message(tuid, "С баланса снято " + str(amount) + "★\nБаланс: " + str(bal) + "★")
+        except Exception:
+            pass
+    except ValueError:
+        await message.answer("Не хватает баланса")
+    except Exception as e:
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+
+@router.message(Command("gift"))
+async def cmd_gift(message: Message):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split(maxsplit=3)
+        if len(parts) < 4:
+            return await message.answer(
+                "Формат:\n/gift ID цена ссылка\n"
+                "Пример:\n/gift 1780308643 1500 https://t.me/nft/..."
+            )
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден. Укажи числовой ID.")
+        try:
+            price = int(str(parts[2]).replace("★", "").replace(" ", ""))
+        except ValueError:
+            return await message.answer("Цена числом, пример: 1500")
+        link = parts[3].strip()
+        if not link:
+            return await message.answer("Нужна ссылка на гифт")
+        db.ensure_user(tuid)
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(tuid)
+        items = inv.get(key)
+        if not isinstance(items, list):
+            items = []
+        item = {"id": db.new_id(), "link": link, "price": price, "title": "Gift"}
+        items.append(item)
+        inv[key] = items
+        db.save_inv(inv)
+        await message.answer(
+            "✅ Гифт выдан\n"
+            "ID: " + str(tuid) + "\n"
+            "Цена: " + str(price) + "★\n"
+            "gift_id: " + item["id"] + "\n"
+            "Ссылка: " + link
+        )
+        try:
+            await bot.send_message(
+                tuid,
+                "🎁 Тебе выдан гифт (~" + str(price) + "★)\n" + link,
+            )
+        except Exception as e:
+            log.warning("gift notify: %s", e)
+    except Exception as e:
+        log.exception("gift")
+        await message.answer("Ошибка /gift: " + str(e)[:200])
+
+
+@router.message(Command("takegift"))
+async def cmd_takegift(message: Message):
+    """Забрать гифт: /takegift ID gift_id  ИЛИ  /takegift ID all"""
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 3:
+            return await message.answer(
+                "Забрать гифт:\n"
+                "/takegift ID gift_id\n"
+                "/takegift ID all — все гифты\n"
+                "Список: /gifts ID"
+            )
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден")
+        inv = db.get_inv()
+        if not isinstance(inv, dict):
+            inv = {}
+        key = str(tuid)
+        items = inv.get(key)
+        if not isinstance(items, list) or not items:
+            return await message.answer("У игрока нет гифтов")
+        target = parts[2].strip().lower()
+        if target == "all":
+            n = len(items)
+            inv[key] = []
+            db.save_inv(inv)
+            await message.answer("✅ Снято гифтов: " + str(n) + " у ID " + str(tuid))
+            try:
+                await bot.send_message(tuid, "Админ забрал все гифты из инвентаря (" + str(n) + ")")
+            except Exception:
+                pass
+            return
+        new_items = [x for x in items if str(x.get("id")) != target]
+        if len(new_items) == len(items):
+            return await message.answer("gift_id не найден. Смотри /gifts " + str(tuid))
+        inv[key] = new_items
+        db.save_inv(inv)
+        await message.answer("✅ Гифт " + target + " забран у ID " + str(tuid))
+        try:
+            await bot.send_message(tuid, "Админ забрал гифт из инвентаря")
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception("takegift")
+        await message.answer("Ошибка /takegift: " + str(e)[:200])
+
+
+@router.message(Command("gifts"))
+async def cmd_gifts(message: Message):
+    """Список гифтов игрока: /gifts ID"""
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            return await message.answer("/gifts ID")
+        tuid = db.parse_user_ref(parts[1])
+        if tuid is None:
+            try:
+                tuid = int(str(parts[1]).lstrip("@"))
+            except Exception:
+                return await message.answer("Юзер не найден")
+        inv = db.get_inv()
+        items = inv.get(str(tuid), []) if isinstance(inv, dict) else []
+        if not isinstance(items, list) or not items:
+            return await message.answer("Пусто у ID " + str(tuid))
+        lines = ["Гифты ID " + str(tuid) + ":"]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            lines.append(
+                "• " + str(it.get("id")) + " | " + str(it.get("price", "?")) + "★ | " + str(it.get("link", ""))[:40]
+            )
+        await message.answer("\n".join(lines))
+    except Exception as e:
+        await message.answer("Ошибка: " + str(e)[:150])
+
+
+@router.message(Command("force"))
+async def cmd_force(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/force ID или 0")
+    if parts[1] in ("0", "off", "none"):
+        v = None
+    else:
+        v = db.parse_user_ref(parts[1])
+        if v is None:
+            try:
+                v = int(parts[1])
+            except Exception:
+                return await message.answer("Юзер не найден")
+    a = db.get_arena()
+    a["force_uid"] = v
+    db.save_arena(a)
+    await message.answer("force=" + str(a["force_uid"]))
+
+
+@router.message(Command("odds777"))
+async def cmd_odds(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/odds777 0.005")
+    s = db.get_settings()
+    s["slot_777"] = float(parts[1])
+    db.save_settings(s)
+    await message.answer("slot_777=" + str(s["slot_777"]))
+
+
+@router.message(Command("owner2"))
+async def cmd_owner2(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/owner2 ID")
+    st = db.get_settings()
+    st["owner2"] = int(parts[1])
+    db.save_settings(st)
+    await message.answer("ok owner2=" + parts[1])
+
+
+@router.message(Command("addadmin"))
+async def cmd_addadmin(message: Message):
+    if not db.is_owner(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/addadmin ID")
+    st = db.get_settings()
+    adm = st.setdefault("admins", [])
+    adm.append(int(parts[1]))
+    st["admins"] = list(set(int(x) for x in adm))
+    db.save_settings(st)
+    await message.answer("admin ok")
+
+
+
+@router.message(Command("deltop"))
+async def cmd_deltop(message: Message):
+    """Убрать из топа: /deltop ID — deposited=0"""
+    if not db.is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        return await message.answer("/deltop ID или @user")
+    tuid = db.parse_user_ref(parts[1])
+    if tuid is None:
+        try:
+            tuid = int(parts[1])
+        except Exception:
+            return await message.answer("Юзер не найден")
+    u = db.get_users()
+    k = str(tuid)
+    if k not in u or not isinstance(u.get(k), dict):
+        return await message.answer("Нет в базе")
+    old = int(u[k].get("deposited") or 0)
+    u[k]["deposited"] = 0
+    db.save_users(u)
+    await message.answer("Убран из топа ID " + str(tuid) + " (было деп " + str(old) + "★)")
+
+
+async def _credit_deposit(oid: str, amount: int, admin_id: int, message_or_cb) -> str:
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return "already"
+    tuid = int(row["uid"])
+    db.ensure_user(tuid, row.get("username") or "")
+    bal = change_balance(tuid, amount, "deposit by " + str(admin_id))
+    u = db.get_users()
+    u[str(tuid)]["deposited"] = int(u[str(tuid)].get("deposited") or 0) + amount
+    db.save_users(u)
+    row["status"] = "done"
+    row["amount"] = amount
+    row["by"] = admin_id
+    deps[oid] = row
+    db.save_deposits(deps)
+    un = row.get("username") or tuid
+    text = "✅ Зачислено " + str(amount) + "★ → @" + str(un) + " (ID " + str(tuid) + ")\nБаланс: " + str(bal) + "★"
+    try:
+        await bot.send_message(tuid, "✅ Депозит принят: +" + str(amount) + "★\nБаланс: " + str(bal) + "★")
+    except Exception as e:
+        log.warning("dep notify user: %s", e)
+    return text
+
+
+@router.callback_query(F.data.startswith("depok:"))
+async def cb_depok(callback: CallbackQuery):
+    try:
+        if not db.is_admin(callback.from_user.id):
+            return await callback.answer("нет доступа", show_alert=True)
+        parts = (callback.data or "").split(":")
+        if len(parts) != 3:
+            return await callback.answer("bad")
+        amount = int(parts[2])
+        oid = parts[1]
+        result = await _credit_deposit(oid, amount, callback.from_user.id, callback)
+        if result == "already":
+            return await callback.answer("Уже обработано", show_alert=True)
+        try:
+            await callback.message.edit_text(result)
+        except Exception:
+            await callback.message.answer(result)
+        await callback.answer("Готово")
+    except Exception as e:
+        log.exception("depok")
+        await callback.answer("Ошибка: " + str(e)[:80], show_alert=True)
+
+
+@router.callback_query(F.data.startswith("depask:"))
+async def cb_depask(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("нет доступа", show_alert=True)
+    oid = (callback.data or "").split(":")[-1]
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return await callback.answer("Уже обработано", show_alert=True)
+    _dep_pending_amount[callback.from_user.id] = ("stars", oid)
+    await callback.answer()
+    await callback.message.answer(
+        "Своя сумма ★ для ID " + str(row.get("uid")) + " (заказ #" + oid + ")\n"
+        "Напиши ТОЛЬКО число, например:\n1500"
+    )
+
+
+@router.callback_query(F.data.startswith("depgift:"))
+async def cb_depgift(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("нет доступа", show_alert=True)
+    oid = (callback.data or "").split(":")[-1]
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        return await callback.answer("Уже обработано", show_alert=True)
+    _dep_pending_amount[callback.from_user.id] = ("gift", oid)
+    await callback.answer()
+    await callback.message.answer(
+        "Гифт для ID " + str(row.get("uid")) + " (заказ #" + oid + ")\n"
+        "Напиши: цена ссылка\n"
+        "Пример:\n1500 https://t.me/nft/..."
+    )
+
+
+@router.callback_query(F.data.startswith("depno:"))
+async def cb_depno(callback: CallbackQuery):
+    try:
+        if not db.is_admin(callback.from_user.id):
+            return await callback.answer("нет доступа", show_alert=True)
+        oid = (callback.data or "").split(":")[-1]
+        deps = db.get_deposits()
+        row = deps.get(oid)
+        if not row or row.get("status") != "pending":
+            return await callback.answer("Уже обработано", show_alert=True)
+        row["status"] = "rejected"
+        row["by"] = callback.from_user.id
+        deps[oid] = row
+        db.save_deposits(deps)
+        try:
+            await callback.message.edit_text("❌ Отклонено #" + oid + " ID " + str(row.get("uid")))
+        except Exception:
+            pass
+        try:
+            await bot.send_message(int(row["uid"]), "❌ Депозит отклонён. Напиши админу.")
+        except Exception:
+            pass
+        await callback.answer("Отклонено")
+    except Exception as e:
+        await callback.answer(str(e)[:80], show_alert=True)
+
+
+@router.message(F.text)
+async def cmd_admin_pending_text(message: Message):
+    """Своя сумма ★ / гифт после депозита + текст рассылки. Не глотает команды."""
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+    aid = message.from_user.id
+    # рассылка: ждём текст после /broadcast (мод или админ)
+    if _broadcast_pending.get(aid) and db.is_moderator(aid):
+        _broadcast_pending.pop(aid, None)
+        await _do_broadcast(aid, text, message)
+        return
+    if not db.is_admin(aid):
+        return
+    pending = _dep_pending_amount.get(aid)
+    if not pending:
+        return
+    kind, oid = pending
+    deps = db.get_deposits()
+    row = deps.get(oid)
+    if not row or row.get("status") != "pending":
+        _dep_pending_amount.pop(aid, None)
+        return await message.answer("Заявка уже закрыта")
+
+    if kind == "stars":
+        if not text.isdigit():
+            return  # not our message
+        _dep_pending_amount.pop(aid, None)
+        amount = int(text)
+        if amount < 1:
+            return await message.answer("Сумма > 0")
+        try:
+            result = await _credit_deposit(oid, amount, aid, message)
+            await message.answer(result if result != "already" else "Уже обработано")
+        except Exception as e:
+            await message.answer("Ошибка: " + str(e)[:150])
+        return
+
+    if kind == "gift":
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[0].isdigit():
+            return await message.answer("Формат: цена ссылка\n1500 https://...")
+        _dep_pending_amount.pop(aid, None)
+        price = int(parts[0])
+        link = parts[1].strip()
+        tuid = int(row["uid"])
+        db.ensure_user(tuid, row.get("username") or "")
+        inv = db.get_inv()
+        item = {"id": db.new_id(), "link": link, "price": price, "title": "Gift"}
+        inv.setdefault(str(tuid), []).append(item)
+        db.save_inv(inv)
+        # гифт-депозит тоже в топ (deposited)
+        try:
+            users = db.get_users()
+            uk = str(tuid)
+            if uk not in users or not isinstance(users.get(uk), dict):
+                db.ensure_user(tuid)
+                users = db.get_users()
+            users[uk]["deposited"] = int(users[uk].get("deposited") or 0) + int(price)
+            db.save_users(users)
+        except Exception as e:
+            log.warning("gift dep top: %s", e)
+        row["status"] = "done"
+        row["gift"] = item
+        row["amount"] = price
+        row["by"] = aid
+        deps[oid] = row
+        db.save_deposits(deps)
+        await message.answer("✅ Гифт " + str(price) + "★ в инвентарь ID " + str(tuid) + " (в топ +" + str(price) + "★)")
+        try:
+            await bot.send_message(tuid, "🎁 Депозит-гифт принят (~" + str(price) + "★)\n" + link)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("wdone:"))
+async def cb_wdone(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("no")
+    wid = callback.data.split(":")[1]
+    w = db.get_withdraws()
+    for row in w:
+        if row.get("id") == wid:
+            row["status"] = "done"
+            try:
+                await bot.send_message(row["uid"], "✅ Гифт отправлен")
+            except Exception:
+                pass
+    db.save_withdraws(w)
+    await callback.answer("ok")
+    try:
+        await callback.message.edit_reply_markup(None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("wrej:"))
+async def cb_wrej(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        return await callback.answer("no")
+    wid = callback.data.split(":")[1]
+    w = db.get_withdraws()
+    for row in w:
+        if row.get("id") == wid and row.get("status") == "pending":
+            row["status"] = "rejected"
+            inv = db.get_inv()
+            inv.setdefault(str(row["uid"]), []).append(row["gift"])
+            db.save_inv(inv)
+            try:
+                if row.get("type") == "stars":
+                    change_balance(row["uid"], int(row.get("amount") or 0), "stars_withdraw_reject")
+                else:
+                    change_balance(row["uid"], WITHDRAW_FEE, "withdraw_reject_fee")
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    row["uid"],
+                    "❌ Вывод отклонён, средства возвращены" if row.get("type") == "stars" else "❌ Вывод отклонён, гифт возвращён",
+                )
+            except Exception:
+                pass
+    db.save_withdraws(w)
+    await callback.answer("rejected")
+
+
+
+
+async def on_startup():
+    url = WEBAPP_URL or os.getenv("RAILWAY_PUBLIC_DOMAIN") or ""
+    if url and not url.startswith("http"):
+        url = "https://" + url
+    if url:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Winline", web_app=WebAppInfo(url=url))
+            )
+            log.info("menu button set %s", url)
+        except Exception as e:
+            log.warning("menu: %s", e)
+
+
+
+@app.post("/api/admin/reset_top")
+async def admin_reset_top(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    users = db.get_users()
+    k = str(target)
+    if k not in users or not isinstance(users.get(k), dict):
+        raise HTTPException(404, "user not found")
+    users[k]["deposited"] = 0
+    db.save_users(users)
+    return {"ok": True, "uid": target, "deposited": 0}
+
+
+@app.post("/api/admin/reset_profile")
+async def admin_reset_profile(body: AdminGive, x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_admin(admin):
+        raise HTTPException(403, "admin")
+    target = resolve_target(body)
+    users = db.get_users()
+    k = str(target)
+    if k not in users or not isinstance(users.get(k), dict):
+        raise HTTPException(404, "user not found")
+    users[k]["balance"] = 0
+    users[k]["deposited"] = 0
+    users[k]["wager"] = 0
+    users[k]["upgrade_win_streak"] = 0
+    users[k]["upgrade_lose_streak"] = 0
+    db.save_users(users)
+    inv = db.get_inv()
+    if isinstance(inv, dict):
+        inv[k] = []
+        db.save_inv(inv)
+    try:
+        mines = db.get_mines()
+        if isinstance(mines, dict) and k in mines:
+            del mines[k]
+            db.save_mines(mines)
+    except Exception:
+        pass
+    try:
+        await bot.send_message(target, "⚠️ Профиль обнулён администратором")
+    except Exception:
+        pass
+    return {"ok": True, "uid": target, "balance": 0, "deposited": 0, "wager": 0}
+
+
+
+@app.post("/api/admin/reset_all_top")
+async def admin_reset_all_top(x_telegram_id: Optional[str] = Header(None)):
+    admin = require_uid(x_telegram_id)
+    if not db.is_owner(admin):
+        raise HTTPException(403, "owner only")
+    users = db.get_users()
+    for k, v in list(users.items()):
+        if isinstance(v, dict):
+            v["deposited"] = 0
+    db.save_users(users)
+    return {"ok": True}
+
+
+@app.on_event("startup")
+async def startup():
+    try:
+        log.info(
+            "OWNER_ID=%s BOT=%s... CHANNEL=%s",
+            OWNER_ID,
+            (BOT_TOKEN or "")[:12],
+            REQUIRED_CHANNEL or "-",
+        )
+        if not BOT_TOKEN:
+            log.error("BOT_TOKEN пустой — задай в Railway Variables")
+        async def _poll():
+            try:
+                log.info("polling start")
+                await dp.start_polling(bot)
+            except Exception:
+                log.exception("polling crashed")
+        asyncio.create_task(_poll())
+
+        async def _rocket_loop():
+            log.info("rocket loop start")
+            # init round if needed
+            try:
+                r = db.get_rocket()
+                if not r.get("betting_ends_at"):
+                    r = _rocket_start_betting(r)
+                    db.save_rocket(r)
+            except Exception:
+                log.exception("rocket init")
+            while True:
+                try:
+                    _rocket_tick()
+                except Exception:
+                    log.exception("rocket_tick loop")
+                await asyncio.sleep(0.15)
+
+        asyncio.create_task(_rocket_loop())
+        try:
+            await on_startup()
+        except Exception:
+            log.exception("on_startup failed")
+    except Exception:
+        log.exception("startup failed")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        await bot.session.close()
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
