@@ -721,7 +721,10 @@ def build_state(uid: int) -> dict:
         "config": {
             "chance_min": 0.05, "chance_max": 0.70,
             "sections": {"upgrade": True, "chests": True, "leaders": False, "staking": False},
-            "gift_upgrade": gifts_on, "tier_enabled": False,
+            "gift_upgrade": gifts_on and db.limit("upg_nft_on") >= 1, "tier_enabled": False,
+            "upgrade_modes": {"nft": db.limit("upg_nft_on") >= 1, "stars": db.limit("upg_stars_on") >= 1},
+            "stars_upgrade": {"min": db.limit("bet_min"), "max": db.limit("stars_up_max"), "max_win": db.limit("stars_up_max"), "edge": db.limit("stars_up_edge") / 100.0,
+                              "min_mult": 1.1, "max_mult": 15, "mults": [2, 5, 10, 15]},
             "chances": CHANCE_GRID, "default_chance": 0.5, "prize_name": "Шляпа волшебника",
             "tiers": {"random": random_tier},
             "min_bet": db.limit("bet_min"), "max_bet": db.limit("bet_max"), "min_deposit_ton": db.limit("deposit_min"),
@@ -732,7 +735,7 @@ def build_state(uid: int) -> dict:
             "ui_texts": {},
         },
         "stats": {"turnover_ton": turn, "withdrawn_ton": float(wd[1] or 0), "withdrawn_count": int(wd[0] or 0),
-                  "games": db.count_games(uid)},
+                  "games": db.count_games(uid), "best": db.best_drop(uid)},
         "turnover_ton": turn, "level": lv, "level_table": [{"level": i + 1, "need": need(i + 1), "reward": False, "claimed": False} for i in range(60)], "tour_sections": tour, "tour_done": bool(tour),
         "lavka_hidden": {"shop": True, "achievements": True, "quests": True},
         "theme": "halloween", "server_time": int(time.time()), "relayer_stock": st,
@@ -763,6 +766,8 @@ async def personal_boss_state(request: Request, x_init_data: str | None = Header
 @app.post("/api/spin")
 async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Header(None)):
     uid = uid_from(request, x_init_data)
+    if db.limit("upg_nft_on") < 1:
+        raise HTTPException(400, detail={"code": "upgrade_closed", "message": "Апгрейд на подарки сейчас закрыт"})
     show = max(0.01, min(0.70, float(body.chance)))
     st = available_stock()
     prize = 0.0
@@ -802,9 +807,8 @@ async def api_spin(body: SpinIn, request: Request, x_init_data: str | None = Hea
         gift_row = {"id": "hat", "name": "Шляпа волшебника", "price": HAT_VALUE, "image": "/images/hat.png"}
     db.ledger(cost, payout if win else 0)
     db.add_turnover(uid, cost)
-    with db.connect() as c:
-        c.execute("INSERT INTO spin_log(user_id,chance,cost,win,created) VALUES(?,?,?,?,?)",
-                  (uid, show, cost, 1 if win else 0, int(time.time())))
+    db.log_game(uid, "upgrade", win, cost, payout if win else 0,
+                target=(gift_row or {}).get("name") or "", image=(gift_row or {}).get("image") or "", chance=show)
     return {"balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "win": win, "chance": show, "cost_ton": cost, "gift": gift_row}
 
 def _mult(opened, empties):
@@ -853,6 +857,8 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
             opened.append(cell)
             c.execute("UPDATE chest_rounds SET active=0,opened=?,bad=? WHERE user_id=?",
                       (json.dumps(opened), json.dumps(bad), uid))
+            c.execute("INSERT INTO spin_log(user_id,chance,cost,win,created,kind,target,image,payout) VALUES(?,?,?,?,?,?,?,?,?)",
+                      (uid, 0, float(row["bet"]), 0, int(time.time()), "chests", "Кладбище", "", 0))
             bal = float(c.execute("SELECT coins FROM users WHERE id=?", (uid,)).fetchone()["coins"])   # тот же коннект: иначе "database is locked"
             return {"finished": True, "balance_ton": bal, "hatcoin_balance": 0, "safe": False, "win": False, "cell": cell,
                     "bad": bad, "opened": opened, "mult": 0, "payout_ton": 0}
@@ -868,6 +874,7 @@ async def chests_open(body: ChestOpen, request: Request, x_init_data: str | None
             c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
     if done:
         db.ledger(0, payout)
+        db.log_game(uid, "chests", True, bet, payout, target="Кладбище x%.2f" % mult)
         return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True, "cell": cell,
                 "bad": bad, "opened": opened, "mult": mult, "payout_ton": payout}
     return {"finished": False, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "cell": cell, "mult": mult,
@@ -889,8 +896,47 @@ async def chests_cash(request: Request, x_init_data: str | None = Header(None)):
             raise HTTPException(400, detail={"code": "no_round"})
         c.execute("UPDATE users SET coins=coins+? WHERE id=?", (payout, uid))
     db.ledger(0, payout)
+    db.log_game(uid, "chests", True, float(row["bet"]), payout, target="Кладбище x%.2f" % mult)
     return {"finished": True, "balance_ton": db.get_coins(uid), "hatcoin_balance": 0, "safe": True, "win": True,
             "payout_ton": payout, "mult": mult, "opened": opened, "bad": bad}
+
+class StarsUpIn(BaseModel):
+    amount: float = 0
+    mult: float = 2
+
+
+STARS_UP_MIN_MULT, STARS_UP_MAX_MULT = 1.1, 15.0
+
+
+@app.post("/api/upgrade/stars")
+async def stars_upgrade(body: StarsUpIn, request: Request, x_init_data: str | None = Header(None)):
+    """Апгрейд звёзд: выигрыш за раз не больше stars_up_max, множитель 1.1–15. Шанс = (1 − комиссия) / множитель, выплата = ставка × множитель."""
+    uid = uid_from(request, x_init_data)
+    if db.limit("upg_stars_on") < 1:
+        raise HTTPException(400, detail={"code": "upgrade_closed", "message": "Апгрейд звёзд сейчас закрыт"})
+    amount, mult = float(body.amount), float(body.mult)
+    lo, cap = db.limit("bet_min"), db.limit("stars_up_max")           # cap — максимум, который можно выиграть за один раз
+    if not (STARS_UP_MIN_MULT <= mult <= STARS_UP_MAX_MULT):
+        raise HTTPException(400, detail={"code": "bad_mult", "message": f"Множитель от {STARS_UP_MIN_MULT:g} до {STARS_UP_MAX_MULT:g}x"})
+    mult = round(mult, 2)
+    hi = math.floor(cap / mult * 100) / 100                            # ставка × множитель не больше cap
+    if not (amount == amount) or amount < lo or amount > hi:
+        raise HTTPException(400, detail={"code": "bad_bet", "min_ton": lo, "max_ton": hi,
+                                         "message": f"Ставка от {lo:g} до {hi:g} ★ при x{mult:g} (выигрыш за раз не больше {cap:g} ★)"})
+    amount = round(amount, 2)
+    edge = min(0.5, max(0.0, db.limit("stars_up_edge") / 100.0))
+    chance = round((1 - edge) / mult, 4)
+    if not db.spend(uid, amount):
+        raise HTTPException(400, detail={"code": "insufficient_funds"})
+    win = random.SystemRandom().random() < chance
+    payout = min(round(amount * mult, 2), cap) if win else 0.0
+    if win:
+        db.add_coins(uid, payout)
+    db.ledger(amount, payout)
+    db.add_turnover(uid, amount)
+    db.log_game(uid, "stars", win, amount, payout, target=f"★ x{mult:g}", image="/images/star-px.png", chance=chance)
+    return {"win": win, "mult": mult, "bet": amount, "payout": payout, "chance": chance, "balance_ton": db.get_coins(uid)}
+
 
 @app.post("/api/upgrade")
 async def classic_up(body: UpgradeIn, request: Request, x_init_data: str | None = Header(None)):
@@ -1026,8 +1072,8 @@ async def shop_stub(request: Request, x_init_data: str | None = Header(None)):
 
 @app.post("/api/history")
 async def history_stub(request: Request, x_init_data: str | None = Header(None)):
-    uid_from(request, x_init_data)
-    return {"rows": []}
+    uid = uid_from(request, x_init_data)
+    return {"rows": db.history(uid, 50)}
 
 @app.post("/api/leaderboard")
 async def leaderboard_stub(request: Request, x_init_data: str | None = Header(None)):
@@ -1072,10 +1118,11 @@ if (ASSETS / "img").is_dir():
 # админ-бот и юзербот (bots.py) стартуют вместе с сервером — отдельные процессы не нужны
 @app.on_event("startup")
 async def _start_bots():
-    try:
-        seed_catalog()
+    try:   # авто-подарки из картинок static/gifts больше не добавляются; убираем ранее засеянные (оставляем только добавленные тобой: lk_/up_/sg_)
+        with db.connect() as c:
+            c.execute("DELETE FROM catalog_gifts WHERE slug NOT LIKE 'lk\\_%' ESCAPE '\\' AND slug NOT LIKE 'up\\_%' ESCAPE '\\' AND slug NOT LIKE 'sg\\_%' ESCAPE '\\'")
     except Exception as e:
-        print("seed_catalog:", e)
+        print("catalog cleanup:", e)
     try:
         import bots
         bots.start()
