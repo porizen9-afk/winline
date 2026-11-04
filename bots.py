@@ -133,30 +133,45 @@ def kb(rows: list[list[tuple[str, str]]]) -> dict:
     }
 
 
-def main_menu_text() -> str:
-    m = "🛠 ВКЛ" if maintenance_on() else "✅ выкл"
-    return (
-        f"🛡 <b>Админка WinLine</b>\n"
-        f"Техперерыв: {m}\n\n"
-        f"Жми кнопки — это же сообщение обновится."
-    )
+def _upg_flags():
+    try:
+        nft = dbm.limit("upg_nft_on") >= 1
+        stars = dbm.limit("upg_stars_on") >= 1
+    except Exception:
+        nft, stars = True, True
+    return nft, stars
 
+
+def main_menu_text() -> str:
+    m = "ВКЛ" if maintenance_on() else "выкл"
+    nft, stars = _upg_flags()
+    lines = [
+        "<b>Админка WinLine</b>",
+        f"Техперерыв: {m}",
+        f"Апгрейд подарки/NFT: <b>{'открыт' if nft else 'ЗАКРЫТ'}</b>",
+        f"Апгрейд звезды: <b>{'открыт' if stars else 'ЗАКРЫТ'}</b>",
+        "",
+        "Жми кнопки — это же сообщение обновится.",
+    ]
+    return chr(10).join(lines)
 
 def main_menu_kb() -> dict:
+    nft, stars = _upg_flags()
     return kb(
         [
-            [("🔍 Игрок", "u:ask"), ("🏆 Топ", "top")],
-            [("🎁 Подарки апгрейда", "ug:list:0"), ("⚙️ Лимиты", "lim:list")],
-            [("📦 Склад", "stock"), ("📋 Очередь", "queue")],
-            [("⭐ Выдать ★", "gs:ask"), ("⭐ Забрать ★", "ts:ask")],
-            [("🎁 Выдать гифт", "gg:ask"), ("🗑 Забрать гифт", "tg:ask")],
-            [("⛔ Бан", "ban:ask"), ("✅ Разбан", "unban:ask")],
-            [("🛠 Техперерыв", "maint:toggle"), ("✏️ Текст техперерыва", "maint:text")],
-            [("📊 Стата", "stats")],
-            [("👤 Выдать админку", "ga:ask"), ("👤 Снять админку", "ra:ask")],
+            [("Игрок", "u:ask"), ("Топ", "top:menu")],
+            [("Подарки апгрейда", "ug:list:0"), ("Лимиты", "lim:list")],
+            [(f"NFT: {'ВКЛ' if nft else 'ВЫКЛ'}", "upg:toggle:nft"),
+             (f"Звезды: {'ВКЛ' if stars else 'ВЫКЛ'}", "upg:toggle:stars")],
+            [("Склад", "stock"), ("Очередь", "queue")],
+            [("Выдать звезды", "gs:ask"), ("Забрать звезды", "ts:ask")],
+            [("Выдать гифт", "gg:ask"), ("Забрать гифт", "tg:ask")],
+            [("Бан", "ban:ask"), ("Разбан", "unban:ask")],
+            [("Техперерыв", "maint:toggle"), ("Текст техперерыва", "maint:text")],
+            [("Стата", "stats")],
+            [("Выдать админку", "ga:ask"), ("Снять админку", "ra:ask")],
         ]
     )
-
 
 def resolve_user(token: str) -> int | None:
     token = (token or "").strip().lstrip("@")
@@ -190,7 +205,7 @@ def profile_text(uid: int) -> str:
         lines.append("— пусто")
     for r in inv:
         lines.append(f"#{r['rowid_']} {r['name']} [{r['status']}] {r['price']}★")
-    return "\n".join(lines)
+    return chr(10).join(lines)
 
 
 def back_kb(extra: list[list[tuple[str, str]]] | None = None) -> dict:
@@ -355,7 +370,7 @@ def lim_view():
         lines.append(f"• {label}: <b>{val:g}</b>")
         rows.append([(f"{label}: {val:g}", f"lim:e:{key}")])
     rows.append([("« Меню", "menu")])
-    return "\n".join(lines), kb(rows)
+    return chr(10).join(lines), kb(rows)
 
 
 async def lim_callback(uid: int, chat_id: int, mid, data: str):
@@ -585,16 +600,41 @@ async def on_callback(cq: dict):
         await show_menu(chat_id, mid, uid)
         return
 
-    if data == "top":
-        with db() as c:
-            rows = c.execute(
-                "SELECT id, username, coins FROM users ORDER BY coins DESC LIMIT 15"
-            ).fetchall()
-        lines = ["🏆 <b>Топ</b>"] + [
-            f"{i}. {r['username'] or r['id']} — {r['coins']:.1f}★"
-            for i, r in enumerate(rows, 1)
-        ]
-        await patch(uid, "\n".join(lines) or "Пусто", back_kb())
+    if data in ("upg:toggle:nft", "upg:toggle:stars"):
+        key = "upg_nft_on" if data.endswith("nft") else "upg_stars_on"
+        cur = dbm.limit(key) >= 1
+        dbm.set_limit(key, 0 if cur else 1)
+        await show_menu(chat_id, mid, uid)
+        return
+
+    if data in ("top:menu", "top"):
+        board = dbm.leaderboard("turnover", 15)
+        lines = ["<b>Топ по обороту</b>"]
+        if not board:
+            lines.append("Пусто")
+        for i, r in enumerate(board, 1):
+            lines.append(f"{i}. {r['username'] or r['user_id']} — {r['score']:.1f}")
+        await patch(
+            uid,
+            "\n".join(lines),
+            kb([
+                [("Обновить", "top:menu")],
+                [("Обнулить весь топ (оборот)", "top:clear:all")],
+                [("Обнулить игрока", "top:zero:ask")],
+                [("Меню", "menu")],
+            ]),
+        )
+        return
+
+    if data == "top:clear:all":
+        with dbm.connect() as c:
+            c.execute("UPDATE user_stats SET turnover_ton=0")
+        await patch(uid, "Весь топ по обороту обнулен.", kb([[("К топу", "top:menu")], [("Меню", "menu")]]))
+        return
+
+    if data == "top:zero:ask":
+        STATE[uid]["mode"] = "top_zero"
+        await patch(uid, "Кого убрать из топа? @username или id.", kb([[("Отмена", "top:menu")]]))
         return
 
     if data == "stock":
@@ -804,6 +844,19 @@ async def on_text(chat_id: int, uid: int, text: str):
         dbm.set_setting("maintenance_text", "" if t == "-" else t[:300])
         st["mode"] = None
         await patch(uid, "✅ Текст техперерыва сохранён.", kb([[("« Меню", "menu")]]))
+        return
+
+    if mode == "top_zero":
+        target = resolve_user(text)
+        if not target:
+            await send(chat_id, "Игрок не найден.")
+            return
+        with dbm.connect() as c:
+            c.execute("INSERT OR IGNORE INTO user_stats(user_id, turnover_ton) VALUES(?,0)", (target,))
+            c.execute("UPDATE user_stats SET turnover_ton=0 WHERE user_id=?", (target,))
+            c.execute("DELETE FROM spin_log WHERE user_id=?", (target,))
+        STATE[uid]["mode"] = None
+        await send(chat_id, f"Игрок {target} убран из топа.", kb([[("К топу", "top:menu")], [("Меню", "menu")]]))
         return
 
     if mode == "lim_set":
